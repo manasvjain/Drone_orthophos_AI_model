@@ -3,6 +3,7 @@ import { Code2, Download, Focus, MapPin } from 'lucide-react';
 import {
   BuildingFeature,
   GisFeature,
+  OrthophotoMetadata,
   ParcelFeature,
   RoadFeature,
   VegetationFeature,
@@ -13,12 +14,16 @@ import { Modal } from '../ui/Modal';
 interface FeatureInspectorProps {
   feature: GisFeature | undefined;
   crs: string;
+  orthophoto?: OrthophotoMetadata | null;
+  coordDims?: { w: number; h: number };
   onZoomToFeature: (id: string) => void;
 }
 
 export function FeatureInspector({
   feature,
   crs,
+  orthophoto,
+  coordDims,
   onZoomToFeature,
 }: FeatureInspectorProps) {
   const [geometryModalOpen, setGeometryModalOpen] = useState(false);
@@ -38,22 +43,29 @@ export function FeatureInspector({
     );
   }
 
+  const projectPoint = ([x, y]: [number, number]): [number, number] => {
+    if (!orthophoto?.bounds || !coordDims?.w || !coordDims?.h) return [x, y];
+    const b = orthophoto.bounds;
+    const lng = b.minLng + (x / coordDims.w) * (b.maxLng - b.minLng);
+    const lat = b.maxLat - (y / coordDims.h) * (b.maxLat - b.minLat);
+    return [Number(lng.toFixed(6)), Number(lat.toFixed(6))];
+  };
+
   const handleExportFeature = () => {
-    const coords =
-      feature.featureClass === 'road'
-        ? (feature as RoadFeature).polyline
-        : [
-            ...(
-              feature as BuildingFeature | WaterFeature | VegetationFeature | ParcelFeature
-            ).polygon,
-            (
-              feature as BuildingFeature | WaterFeature | VegetationFeature | ParcelFeature
-            ).polygon[0],
-          ];
+    let geometryCoords: [number, number][] | [number, number][][];
+    if (feature.featureClass === 'road') {
+      geometryCoords = (feature as RoadFeature).polyline.map(projectPoint);
+    } else {
+      const poly = (
+        feature as BuildingFeature | WaterFeature | VegetationFeature | ParcelFeature
+      ).polygon;
+      const ring = poly.length > 0 ? [...poly, poly[0]].map(projectPoint) : [];
+      geometryCoords = [ring];
+    }
 
     const geojson = {
       type: 'FeatureCollection',
-      crs: { type: 'name', properties: { name: crs } },
+      crs: { type: 'name', properties: { name: orthophoto?.bounds ? 'EPSG:4326' : crs } },
       features: [
         {
           type: 'Feature',
@@ -65,7 +77,7 @@ export function FeatureInspector({
           },
           geometry: {
             type: feature.featureClass === 'road' ? 'LineString' : 'Polygon',
-            coordinates: feature.featureClass === 'road' ? coords : [coords],
+            coordinates: geometryCoords,
           },
         },
       ],

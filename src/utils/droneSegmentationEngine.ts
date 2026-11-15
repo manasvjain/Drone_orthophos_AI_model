@@ -18,14 +18,18 @@ const CLS_VEGETATION = 2;
 const CLS_WATER = 3;
 const CLS_ROAD = 4;
 
-const VIEW_W = 1000;
-const VIEW_H = 562.5;
-
 export interface SegmentationRunResult {
   width: number;
   height: number;
   outputs: SegmentationOutputs;
   features: GisFeature[];
+}
+
+interface ImageAdaptiveStats {
+  medianLum: number;
+  p15Lum: number;
+  p85Lum: number;
+  medianNonVegStd: number;
 }
 
 function loadImageElement(src: string): Promise<HTMLImageElement> {
@@ -49,7 +53,6 @@ function computeTextureAndEdgeMaps(pixels: Uint8ClampedArray, w: number, h: numb
     lum[i] = 0.299 * pixels[p] + 0.587 * pixels[p + 1] + 0.114 * pixels[p + 2];
   }
 
-  // Sobel gradient magnitude
   for (let y = 1; y < h - 1; y++) {
     for (let x = 1; x < w - 1; x++) {
       const i = y * w + x;
@@ -71,7 +74,6 @@ function computeTextureAndEdgeMaps(pixels: Uint8ClampedArray, w: number, h: numb
     }
   }
 
-  // Integral tables (size (w+1)*(h+1)) for O(1) 5x5 stdDev and 5x5 edge density
   const iw = w + 1;
   const intLum = new Float64Array(iw * (h + 1));
   const intLumSq = new Float64Array(iw * (h + 1));
@@ -127,13 +129,67 @@ function computeTextureAndEdgeMaps(pixels: Uint8ClampedArray, w: number, h: numb
   return { lum, localStd, edgeDensity };
 }
 
-function classifyPixelAccurate(
+// Per-image percentile calibration so unseen flights with different exposure generalize reliably
+function computeAdaptiveStats(
+  pixels: Uint8ClampedArray,
+  lum: Float32Array,
+  localStd: Float32Array,
+  n: number
+): ImageAdaptiveStats {
+  const lumHist = new Int32Array(256);
+  const stdHist = new Int32Array(128);
+  let nonVegCount = 0;
+
+  for (let i = 0; i < n; i += 2) {
+    const l = Math.max(0, Math.min(255, Math.round(lum[i])));
+    lumHist[l]++;
+    const p = i * 4;
+    const exg = 2 * pixels[p + 1] - pixels[p] - pixels[p + 2];
+    if (exg <= 14) {
+      const s = Math.max(0, Math.min(127, Math.round(localStd[i])));
+      stdHist[s]++;
+      nonVegCount++;
+    }
+  }
+
+  const totalSamples = Math.max(1, Math.ceil(n / 2));
+  const percentileLum = (pct: number) => {
+    const target = totalSamples * pct;
+    let acc = 0;
+    for (let v = 0; v < 256; v++) {
+      acc += lumHist[v];
+      if (acc >= target) return v;
+    }
+    return 128;
+  };
+
+  const stdTarget = Math.max(1, nonVegCount) * 0.45;
+  let stdAcc = 0;
+  let medianNonVegStd = 12;
+  for (let s = 0; s < 128; s++) {
+    stdAcc += stdHist[s];
+    if (stdAcc >= stdTarget) {
+      medianNonVegStd = s;
+      break;
+    }
+  }
+
+  return {
+    p15Lum: percentileLum(0.15),
+    medianLum: percentileLum(0.5),
+    p85Lum: percentileLum(0.85),
+    medianNonVegStd: Math.max(7, Math.min(20, medianNonVegStd)),
+  };
+}
+
+function classifyPixelAdaptive(
   r: number,
   g: number,
   b: number,
   lumVal: number,
   stdVal: number,
   edgeVal: number,
+  stats: ImageAdaptiveStats,
   enabled: Set<string>
 ): number {
   const maxC = Math.max(r, g, b);
@@ -141,93 +197,109 @@ function classifyPixelAccurate(
   const delta = maxC - minC;
   const sat = maxC > 0 ? delta / maxC : 0;
 
-  // Spectral indices
+  // Cast shadows between buildings act as separation boundaries (never merge into roofs!)
+  if (lumVal < Math.min(58, stats.p15Lum * 0.85) && sat < 0.28) {
+    return CLS_BG;
+  }
+
   const exg = 2 * g - r - b;
   const rgDiff = r - g;
   const rbDiff = r - b;
   const ngrdi = (g - r) / (g + r + 1);
 
   // 1. WATER BODIES:
-  // (a) Smooth dark/teal/blue water (rivers, canals, clear johads)
-  // (b) Smooth pale/algae-green village ponds (high G, moderate R, low B, ultra-low 5x5 stdDev)
+  // (a) Smooth dark/teal/blue water (rivers, canals, ponds)
+  // (b) Smooth algae/duckweed-covered village ponds (high G, moderate R, very low texture)
   if (enabled.has('Water')) {
     const isCoolWater =
-      b >= r - 2 && b >= g - 10 && lumVal >= 22 && lumVal <= 165 && stdVal < 11.5 && edgeVal < 12;
+      b >= r - 3 &&
+      b >= g - 10 &&
+      lumVal >= 20 &&
+      lumVal <= 170 &&
+      stdVal < 10.5 &&
+      edgeVal < 11.5;
     const isAlgaePond =
       exg > 20 &&
       ngrdi > 0.04 &&
-      g > 115 &&
-      r > 90 &&
+      g > 110 &&
+      r > 85 &&
       b < g - 20 &&
-      stdVal < 9.2 &&
-      edgeVal < 10.5;
+      stdVal < 8.4 &&
+      edgeVal < 9.5;
     if (isCoolWater || isAlgaePond) {
       return CLS_WATER;
     }
   }
 
   // 2. VEGETATION:
-  // Strong Excess Green or dark green tree canopies with foliage texture
+  // Textured green trees, shrubs, and agricultural plots
   if (enabled.has('Vegetation')) {
     const isGreenCanopy =
-      exg > 14 && g > r * 1.02 && g > b * 1.08 && lumVal >= 25 && lumVal <= 210;
+      exg > 13 && g > r * 1.015 && g > b * 1.07 && lumVal >= 22 && lumVal <= 212;
     const isDeepFoliage =
-      ngrdi > 0.06 && g > b + 12 && lumVal < 135 && stdVal >= 6.5;
+      ngrdi > 0.055 && g > b + 10 && lumVal < 140 && stdVal >= 6.0;
     if (isGreenCanopy || isDeepFoliage) {
       return CLS_VEGETATION;
     }
   }
 
-  // 3. BUILDINGS:
-  // (a) Terracotta clay tiled roofs (warm red/rust hue with ridge texture / edge contrast)
-  // (b) Bright concrete RCC slabs & bright corrugated tin roofs (high luminance, low chroma)
-  // (c) Weathered concrete RCC roofs (medium-high luminance, low chroma, structural edges)
-  // (d) Painted blue/cyan/terracotta metal sheets
+  // 3. BUILDINGS (Adaptive luminance thresholds + roof chromaticity + edge support):
   if (enabled.has('Buildings')) {
-    const isTerracottaTile =
-      rbDiff > 30 &&
-      rgDiff > 12 &&
-      r > g * 1.13 &&
-      r > 85 &&
-      g > 40 &&
-      (edgeVal > 8.5 || stdVal > 8.5);
+    const rccBrightThresh = Math.max(152, Math.min(182, stats.medianLum + 32));
+    const rccMidThresh = Math.max(122, stats.medianLum + 6);
 
-    const isBrightRcc = lumVal > 165 && sat < 0.22;
+    const isTerracottaTile =
+      rbDiff > 26 &&
+      rgDiff > 10 &&
+      r > g * 1.11 &&
+      r > 80 &&
+      g > 38 &&
+      (edgeVal > 7.5 || stdVal > 7.5);
+
+    const isBrightRcc = lumVal > rccBrightThresh && sat < 0.22;
     const isWeatheredRcc =
-      lumVal >= 134 && lumVal <= 165 && sat < 0.16 && edgeVal > 7.5;
-    const isBlueMetalRoof = b > r + 26 && b > 105 && sat > 0.25;
+      lumVal >= rccMidThresh &&
+      lumVal <= rccBrightThresh &&
+      sat < 0.16 &&
+      edgeVal > 7.5;
+    const isBlueMetalRoof = b > r + 24 && b > 95 && sat > 0.24;
+    const isPaintedMetalRoof = sat > 0.34 && r > 130 && g < 90 && b < 90 && edgeVal > 6.5;
     const isDarkSlateRoof =
-      lumVal >= 56 && lumVal <= 108 && sat < 0.13 && edgeVal > 12.5;
+      lumVal >= 56 && lumVal <= 108 && sat < 0.13 && edgeVal > 12.0;
 
     if (
       isTerracottaTile ||
       isBrightRcc ||
       isWeatheredRcc ||
       isBlueMetalRoof ||
+      isPaintedMetalRoof ||
       isDarkSlateRoof
     ) {
       return CLS_BUILDING;
     }
   }
 
-  // 4. ROADS (Candidate pixels — later refined by elongation & continuity filter!):
-  // Smooth asphalt, concrete lanes, interlocking pavers, and compacted earth roads
+  // 4. ROADS (Adaptive smooth corridor candidates — filtered later by elongation & width):
   if (enabled.has('Roads')) {
+    const roadMaxStd = Math.max(11.5, stats.medianNonVegStd * 1.05);
+    const roadLow = Math.max(62, stats.p15Lum * 0.95);
+    const roadHigh = Math.min(176, stats.p85Lum * 0.96);
+
     const isSmoothEarthOrPaver =
-      lumVal >= 72 &&
-      lumVal <= 168 &&
+      lumVal >= roadLow &&
+      lumVal <= roadHigh &&
       sat >= 0.04 &&
       sat <= 0.36 &&
       r >= g - 6 &&
       g >= b - 6 &&
       rbDiff < 44 &&
-      stdVal < 13.5 &&
-      edgeVal < 15.0;
+      stdVal < roadMaxStd &&
+      edgeVal < 14.5;
 
     const isAsphalt =
-      lumVal >= 64 &&
-      lumVal <= 132 &&
-      sat < 0.14 &&
+      lumVal >= Math.max(55, roadLow - 8) &&
+      lumVal <= Math.min(136, stats.medianLum + 10) &&
+      sat < 0.15 &&
       stdVal < 10.5 &&
       edgeVal < 12.0;
 
@@ -239,14 +311,14 @@ function classifyPixelAccurate(
   return CLS_BG;
 }
 
-// Morphological binary mask operations for a target class
 function morphPass(
   classes: Uint8Array,
   w: number,
   h: number,
   targetClass: number,
   mode: 'dilate' | 'erode',
-  radius = 1
+  radius = 1,
+  shadowBarrier?: Uint8Array
 ) {
   const out = new Uint8Array(classes);
   for (let y = 0; y < h; y++) {
@@ -254,6 +326,8 @@ function morphPass(
       const idx = y * w + x;
       if (mode === 'dilate') {
         if (classes[idx] === targetClass) continue;
+        // Never bridge across dark shadow boundaries when closing buildings
+        if (shadowBarrier && shadowBarrier[idx] === 1) continue;
         let hit = false;
         for (let dy = -radius; dy <= radius && !hit; dy++) {
           const ny = y + dy;
@@ -311,13 +385,13 @@ function detectRoofTypeFromPixels(
     const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
 
-    if (r - b > 30 && r > g * 1.13) {
+    if (r - b > 26 && r > g * 1.11) {
       tiledVotes++;
-    } else if (b > r + 24 && b > 105) {
-      tinVotes += 1.2;
-    } else if (lum > 184 && sat < 0.16) {
+    } else if (b > r + 24 && b > 95) {
+      tinVotes += 1.25;
+    } else if (lum > 180 && sat < 0.16) {
       rccVotes++;
-    } else if (lum > 142 && sat < 0.22) {
+    } else if (lum > 138 && sat < 0.22) {
       rccVotes += 0.65;
       tinVotes += 0.35;
     } else {
@@ -342,7 +416,6 @@ function detectRoofTypeFromPixels(
   };
 }
 
-// Ramer-Douglas-Peucker polyline/polygon simplification
 function perpendicularDist(p: [number, number], a: [number, number], b: [number, number]) {
   const dx = b[0] - a[0];
   const dy = b[1] - a[1];
@@ -372,11 +445,9 @@ function rdpSimplify(pts: [number, number][], epsilon: number): [number, number]
   return [pts[0], pts[end]];
 }
 
-// Moore-Neighbor outer boundary tracing on a component binary mask
 function traceComponentContour(
   cells: number[],
   gw: number,
-  gh: number,
   minX: number,
   maxX: number,
   minY: number,
@@ -402,7 +473,6 @@ function traceComponentContour(
 
   if (startX === -1) return [];
 
-  // 8-neighbor clockwise offsets starting from West (-1, 0)
   const dirs: [number, number][] = [
     [-1, 0],
     [-1, -1],
@@ -417,7 +487,7 @@ function traceComponentContour(
   const boundary: [number, number][] = [];
   let cx = startX;
   let cy = startY;
-  let backtrackDir = 0; // came from West
+  let backtrackDir = 0;
   const maxSteps = bw * bh * 4;
 
   for (let step = 0; step < maxSteps; step++) {
@@ -443,7 +513,6 @@ function traceComponentContour(
   return boundary;
 }
 
-// Convex hull fallback for enclosing parcel blocks
 function convexHull(points: [number, number][]): [number, number][] {
   if (points.length <= 3) return points;
   const sorted = [...points].sort((a, b) => (a[0] === b[0] ? a[1] - b[1] : a[0] - b[0]));
@@ -470,7 +539,7 @@ function convexHull(points: [number, number][]): [number, number][] {
   return lower.concat(upper);
 }
 
-// Zhang-Suen morphological skeletonization for extracting multi-branch road centerlines
+// Zhang-Suen morphological skeletonization + spur pruning for road centerlines
 function skeletonizeRoadComponent(
   cells: number[],
   gw: number,
@@ -538,7 +607,6 @@ function skeletonizeRoadComponent(
     }
   }
 
-  // Trace connected chains of skeleton pixels
   const visited = new Uint8Array(bw * bh);
   const chains: [number, number][][] = [];
   const nbrs: [number, number][] = [
@@ -560,7 +628,6 @@ function skeletonizeRoadComponent(
     return d;
   };
 
-  // Start tracing from endpoints (degree == 1) first, then remaining unvisited loops
   const candidates: [number, number][] = [];
   for (let y = 1; y < bh - 1; y++) {
     for (let x = 1; x < bw - 1; x++) {
@@ -594,7 +661,8 @@ function skeletonizeRoadComponent(
       cx = next[0];
       cy = next[1];
     }
-    if (chain.length >= 6) {
+    // Prune short skeleton spurs (< 8 grid cells)
+    if (chain.length >= 8) {
       chains.push(chain);
     }
   }
@@ -616,25 +684,6 @@ function polygonAreaAndPerimeter(pts: [number, number][], metersPerUnit: number)
     areaSqm: Number((Math.abs(area / 2) * metersPerUnit * metersPerUnit).toFixed(1)),
     perimeterM: Number((perim * metersPerUnit).toFixed(1)),
   };
-}
-
-function mapCanvasToViewBox(px: number, py: number, w: number, h: number): [number, number] {
-  const imgAspect = w / h;
-  const viewAspect = VIEW_W / VIEW_H;
-  let scale: number;
-  let offsetX = 0;
-  let offsetY = 0;
-  if (imgAspect > viewAspect) {
-    scale = VIEW_H / h;
-    offsetX = (VIEW_W - w * scale) / 2;
-  } else {
-    scale = VIEW_W / w;
-    offsetY = (VIEW_H - h * scale) / 2;
-  }
-  return [
-    Number((px * scale + offsetX).toFixed(1)),
-    Number((py * scale + offsetY).toFixed(1)),
-  ];
 }
 
 function extractConnectedComponents(
@@ -758,10 +807,12 @@ export async function runTiledDroneSegmentation(
   );
 
   const img = await loadImageElement(imageUrl);
+  const natW = img.naturalWidth || 768;
+  const natH = img.naturalHeight || 512;
   const maxDim = 768;
-  const scale = Math.min(1, maxDim / Math.max(img.naturalWidth || 768, img.naturalHeight || 512));
-  const w = Math.max(128, Math.round((img.naturalWidth || 768) * scale));
-  const h = Math.max(128, Math.round((img.naturalHeight || 512) * scale));
+  const scale = Math.min(1, maxDim / Math.max(natW, natH));
+  const w = Math.max(128, Math.round(natW * scale));
+  const h = Math.max(128, Math.round(natH * scale));
 
   const srcCanvas = document.createElement('canvas');
   srcCanvas.width = w;
@@ -773,8 +824,15 @@ export async function runTiledDroneSegmentation(
   const imgData = srcCtx.getImageData(0, 0, w, h);
   const pixels = imgData.data;
 
-  // Precompute 5x5 local texture std-dev & Sobel edge density maps
+  // Precompute texture, edge density, and per-image adaptive exposure calibration
   const { lum, localStd, edgeDensity } = computeTextureAndEdgeMaps(pixels, w, h);
+  const stats = computeAdaptiveStats(pixels, lum, localStd, w * h);
+
+  // Mark shadow barriers to prevent adjacent houses from merging across narrow eaves shadows
+  const shadowBarrier = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (lum[i] < Math.min(58, stats.p15Lum * 0.85)) shadowBarrier[i] = 1;
+  }
 
   // Tiled 256x256 (or configured tileSize) inference pass mirroring app_3c61c556.py
   let rawClasses = new Uint8Array(w * h);
@@ -789,13 +847,14 @@ export async function runTiledDroneSegmentation(
         for (let x = tx; x < xEnd; x++) {
           const i = y * w + x;
           const p = i * 4;
-          rawClasses[i] = classifyPixelAccurate(
+          rawClasses[i] = classifyPixelAdaptive(
             pixels[p],
             pixels[p + 1],
             pixels[p + 2],
             lum[i],
             localStd[i],
             edgeDensity[i],
+            stats,
             enabled
           );
         }
@@ -803,7 +862,8 @@ export async function runTiledDroneSegmentation(
     }
   }
 
-  // Override with real PyTorch Flask masks if available
+  const fromFlask = Boolean(options?.flaskMasks);
+
   if (options?.flaskMasks) {
     try {
       const [bldImg, rdImg] = await Promise.all([
@@ -826,28 +886,24 @@ export async function runTiledDroneSegmentation(
         }
       }
     } catch {
-      // Fall back to local segmentation
+      // Keep local classification if mask decode fails
     }
   } else {
-    // Morphological refinement:
-    // 1. Close small gaps inside building roofs (water tanks, vents, parapet shadows)
     if (enabled.has('Buildings')) {
-      rawClasses = morphPass(rawClasses, w, h, CLS_BUILDING, 'dilate', 1);
+      rawClasses = morphPass(rawClasses, w, h, CLS_BUILDING, 'dilate', 1, shadowBarrier);
       rawClasses = morphPass(rawClasses, w, h, CLS_BUILDING, 'erode', 1);
     }
-    // 2. Close small ripples inside water bodies
     if (enabled.has('Water')) {
       rawClasses = morphPass(rawClasses, w, h, CLS_WATER, 'dilate', 2);
       rawClasses = morphPass(rawClasses, w, h, CLS_WATER, 'erode', 2);
     }
-    // 3. Bridge slight tree overhangs across roads
     if (enabled.has('Roads')) {
       rawClasses = morphPass(rawClasses, w, h, CLS_ROAD, 'dilate', 1);
       rawClasses = morphPass(rawClasses, w, h, CLS_ROAD, 'erode', 1);
     }
   }
 
-  // 3x3 majority filter to remove isolated pixel noise
+  // 3x3 majority filter
   const classes = new Uint8Array(w * h);
   const counts = new Int32Array(5);
   for (let y = 0; y < h; y++) {
@@ -872,24 +928,42 @@ export async function runTiledDroneSegmentation(
     }
   }
 
-  // Shape-based Region Filtering on high-resolution working grid (~220px wide) BEFORE building output PNGs
+  // Downsample to working grid (~220px wide) via majority-vote pooling per cell to preserve thin roads & roof edges
   const gw = 220;
   const gh = Math.max(110, Math.round((h / w) * gw));
   const grid = new Uint8Array(gw * gh);
+  const cellVotes = new Int32Array(gw * gh * 5);
   const gridPixelRefs: number[][] = Array.from({ length: gw * gh }, () => []);
 
-  for (let gy = 0; gy < gh; gy++) {
-    const sy = Math.min(h - 1, Math.floor((gy / gh) * h));
-    for (let gx = 0; gx < gw; gx++) {
-      const sx = Math.min(w - 1, Math.floor((gx / gw) * w));
+  for (let y = 0; y < h; y++) {
+    const gy = Math.min(gh - 1, Math.floor((y / h) * gh));
+    for (let x = 0; x < w; x++) {
+      const gx = Math.min(gw - 1, Math.floor((x / w) * gw));
       const gIdx = gy * gw + gx;
-      grid[gIdx] = classes[sy * w + sx];
-      gridPixelRefs[gIdx].push(sy * w + sx);
+      const pIdx = y * w + x;
+      const c = classes[pIdx];
+      cellVotes[gIdx * 5 + c]++;
+      if (gridPixelRefs[gIdx].length < 4) {
+        gridPixelRefs[gIdx].push(pIdx);
+      }
     }
   }
 
-  // Filter false road patches (reject isolated courtyard dirt specks that aren't elongated road corridors)
-  if (!options?.flaskMasks && enabled.has('Roads')) {
+  for (let gIdx = 0; gIdx < gw * gh; gIdx++) {
+    const base = gIdx * 5;
+    let bestC = CLS_BG;
+    let bestV = cellVotes[base];
+    for (let c = 1; c < 5; c++) {
+      if (cellVotes[base + c] > bestV) {
+        bestC = c;
+        bestV = cellVotes[base + c];
+      }
+    }
+    grid[gIdx] = bestC;
+  }
+
+  // Shape-based Region Filtering (skipped for roads/buildings when PyTorch Flask provides exact masks)
+  if (!fromFlask && enabled.has('Roads')) {
     const rawRoadComps = extractConnectedComponents(grid, gw, gh, CLS_ROAD, 1, 8);
     const validRoadCellSet = new Set<number>();
     for (const comp of rawRoadComps) {
@@ -898,8 +972,8 @@ export async function runTiledDroneSegmentation(
       const diag = Math.hypot(spanX, spanY);
       const avgThickness = comp.cells.length / Math.max(1, diag);
       const elongation = diag / Math.max(1.5, avgThickness);
-      // Keep linear corridors (long span or high elongation) and reject small compact yard blobs
-      if (comp.cells.length >= 42 && (diag >= 26 || elongation >= 3.2)) {
+      // Roads must be elongated corridors, not wide square open fallow plots
+      if (comp.cells.length >= 38 && (diag >= 24 || elongation >= 3.0) && avgThickness < 24) {
         for (const c of comp.cells) validRoadCellSet.add(c);
       }
     }
@@ -908,7 +982,6 @@ export async function runTiledDroneSegmentation(
         grid[i] = CLS_BG;
       }
     }
-    // Sync rejected non-road pixels back to full-res mask for clean Road Mask PNG
     for (let y = 0; y < h; y++) {
       const gy = Math.min(gh - 1, Math.floor((y / h) * gh));
       for (let x = 0; x < w; x++) {
@@ -921,28 +994,37 @@ export async function runTiledDroneSegmentation(
     }
   }
 
-  // Filter false water patches (require smooth surface stdDev inside component and sufficient size)
   if (enabled.has('Water')) {
     const rawWaterComps = extractConnectedComponents(grid, gw, gh, CLS_WATER, 1, 4);
     const validWaterCells = new Set<number>();
     for (const comp of rawWaterComps) {
-      if (comp.cells.length < 30) continue;
-      let sumStd = 0;
-      let count = 0;
+      if (comp.cells.length < 28) continue;
+      const stdVals: number[] = [];
       for (const c of comp.cells) {
         for (const pxIdx of gridPixelRefs[c]) {
-          sumStd += localStd[pxIdx];
-          count++;
+          stdVals.push(localStd[pxIdx]);
         }
       }
-      const meanStd = count > 0 ? sumStd / count : 99;
-      if (meanStd < 11.5) {
+      stdVals.sort((a, b) => a - b);
+      const medianStd = stdVals.length ? stdVals[Math.floor(stdVals.length / 2)] : 99;
+      if (medianStd < 8.8) {
         for (const c of comp.cells) validWaterCells.add(c);
       }
     }
+    const isGreenAtPixel = (pxIdx: number) => {
+      const p = pxIdx * 4;
+      const r = pixels[p];
+      const g = pixels[p + 1];
+      const b = pixels[p + 2];
+      return 2 * g - r - b > 12 && g > r;
+    };
     for (let i = 0; i < gw * gh; i++) {
       if (grid[i] === CLS_WATER && !validWaterCells.has(i)) {
-        grid[i] = CLS_VEGETATION;
+        const sampleIdx = gridPixelRefs[i][0];
+        grid[i] =
+          enabled.has('Vegetation') && sampleIdx !== undefined && isGreenAtPixel(sampleIdx)
+            ? CLS_VEGETATION
+            : CLS_BG;
       }
     }
     for (let y = 0; y < h; y++) {
@@ -951,13 +1033,16 @@ export async function runTiledDroneSegmentation(
         const idx = y * w + x;
         if (classes[idx] === CLS_WATER) {
           const gx = Math.min(gw - 1, Math.floor((x / w) * gw));
-          if (!validWaterCells.has(gy * gw + gx)) classes[idx] = CLS_VEGETATION;
+          if (!validWaterCells.has(gy * gw + gx)) {
+            classes[idx] =
+              enabled.has('Vegetation') && isGreenAtPixel(idx) ? CLS_VEGETATION : CLS_BG;
+          }
         }
       }
     }
   }
 
-  // Build Overlay, Buildings Mask, and Roads Mask PNGs (matching app_3c61c556.py)
+  // Build Overlay, Buildings Mask, and Roads Mask PNGs
   const overlayCanvas = document.createElement('canvas');
   overlayCanvas.width = w;
   overlayCanvas.height = h;
@@ -1030,7 +1115,8 @@ export async function runTiledDroneSegmentation(
   bldCtx.putImageData(bldData, 0, 0);
   rdCtx.putImageData(rdData, 0, 0);
 
-  // Vector Feature Extraction
+  // Extract Vector Features directly in native image coordinates [0..natW, 0..natH]!
+  // This guarantees 1:1 sub-pixel alignment with <svg viewBox="0 0 natW natH" preserveAspectRatio="xMidYMid slice">
   const features: GisFeature[] = [];
   const shortCode = project.village
     .split(/\s+/)
@@ -1046,17 +1132,19 @@ export async function runTiledDroneSegmentation(
     minLng: project.longitude - 0.003,
     maxLng: project.longitude + 0.003,
   };
-  const metersPerViewUnit = 0.55;
+  // Ground Sample Distance in meters/pixel (default ~5cm/px scaled to native width, ~0.4m per nat px normalized)
+  const gsdM = (project.orthophoto?.resolutionCm ?? 5.0) / 100;
+  // Scale factor so typical village orthophoto widths (~1000px) map realistically to ~400m span
+  const metersPerNatPx = Math.max(0.05, Math.min(0.8, (400 / natW) * (gsdM / 0.05)));
 
-  const cellToViewBox = (gx: number, gy: number): [number, number] => {
-    const px = ((gx + 0.5) / gw) * w;
-    const py = ((gy + 0.5) / gh) * h;
-    return mapCanvasToViewBox(px, py, w, h);
-  };
+  const cellToNativePt = (gx: number, gy: number): [number, number] => [
+    Number((((gx + 0.5) / gw) * natW).toFixed(1)),
+    Number((((gy + 0.5) / gh) * natH).toFixed(1)),
+  ];
 
-  // 1. Extract Building Footprints using Moore-Neighbor Contour Tracing + RDP simplification
+  // 1. Buildings
   if (enabled.has('Buildings')) {
-    const bldComps = extractConnectedComponents(grid, gw, gh, CLS_BUILDING, 24, 4).slice(0, 26);
+    const bldComps = extractConnectedComponents(grid, gw, gh, CLS_BUILDING, 22, 4).slice(0, 28);
     let bIdx = 0;
     for (const comp of bldComps) {
       const spanX = comp.maxX - comp.minX + 1;
@@ -1064,14 +1152,11 @@ export async function runTiledDroneSegmentation(
       const bboxArea = spanX * spanY;
       const fillRatio = comp.cells.length / Math.max(1, bboxArea);
       const aspect = Math.max(spanX, spanY) / Math.max(1, Math.min(spanX, spanY));
-
-      // Reject ultra-thin sliver artifacts that aren't structures
-      if (aspect > 6.0 && fillRatio < 0.25) continue;
+      if (aspect > 6.2 && fillRatio < 0.25) continue;
 
       const contourGrid = traceComponentContour(
         comp.cells,
         gw,
-        gh,
         comp.minX,
         comp.maxX,
         comp.minY,
@@ -1082,17 +1167,16 @@ export async function runTiledDroneSegmentation(
           ? rdpSimplify(contourGrid, 1.55)
           : convexHull(comp.cells.map((c) => [c % gw, (c / gw) | 0]));
 
-      const polygon = simplifiedGrid.map(([gx, gy]) => cellToViewBox(gx, gy));
+      const polygon = simplifiedGrid.map(([gx, gy]) => cellToNativePt(gx, gy));
       if (polygon.length < 3) continue;
 
-      const { areaSqm, perimeterM } = polygonAreaAndPerimeter(polygon, metersPerViewUnit);
-      if (areaSqm < 24) continue;
+      const { areaSqm, perimeterM } = polygonAreaAndPerimeter(polygon, metersPerNatPx);
+      if (areaSqm < 22) continue;
 
       bIdx++;
       const origPxIndices = comp.cells.flatMap((c) => gridPixelRefs[c]);
       const { roofType, confidence: roofConf } = detectRoofTypeFromPixels(pixels, origPxIndices);
 
-      // Compute mean edge support for confidence calibration
       let edgeSum = 0;
       for (const pxIdx of origPxIndices) edgeSum += edgeDensity[pxIdx];
       const meanEdge = origPxIndices.length ? edgeSum / origPxIndices.length : 10;
@@ -1128,14 +1212,13 @@ export async function runTiledDroneSegmentation(
     }
   }
 
-  // 2. Extract Water Bodies using contour tracing
+  // 2. Water Bodies
   if (enabled.has('Water')) {
-    const waterComps = extractConnectedComponents(grid, gw, gh, CLS_WATER, 30, 4).slice(0, 6);
+    const waterComps = extractConnectedComponents(grid, gw, gh, CLS_WATER, 28, 4).slice(0, 6);
     waterComps.forEach((comp, idx) => {
       const contourGrid = traceComponentContour(
         comp.cells,
         gw,
-        gh,
         comp.minX,
         comp.maxX,
         comp.minY,
@@ -1145,9 +1228,9 @@ export async function runTiledDroneSegmentation(
         contourGrid.length >= 4
           ? rdpSimplify(contourGrid, 1.8)
           : convexHull(comp.cells.map((c) => [c % gw, (c / gw) | 0]));
-      const polygon = simplified.map(([gx, gy]) => cellToViewBox(gx, gy));
+      const polygon = simplified.map(([gx, gy]) => cellToNativePt(gx, gy));
       if (polygon.length < 3) return;
-      const { areaSqm, perimeterM } = polygonAreaAndPerimeter(polygon, metersPerViewUnit);
+      const { areaSqm, perimeterM } = polygonAreaAndPerimeter(polygon, metersPerNatPx);
       const wat: WaterFeature = {
         id: `WB-${shortCode}-${String(idx + 1).padStart(3, '0')}`,
         projectId: project.id,
@@ -1157,15 +1240,15 @@ export async function runTiledDroneSegmentation(
         modelVersion: modelVer,
         processingDate: dateStr,
         polygon,
-        areaSqm: Math.max(140, areaSqm),
-        perimeterM: Math.max(48, perimeterM),
+        areaSqm: Math.max(120, areaSqm),
+        perimeterM: Math.max(42, perimeterM),
         waterType: idx === 0 ? 'Village Pond (Johad)' : 'Drainage Channel',
       };
       features.push(wat);
     });
   }
 
-  // 3. Extract Vegetation Regions using contour tracing
+  // 3. Vegetation Regions
   if (enabled.has('Vegetation')) {
     const vegComps = extractConnectedComponents(grid, gw, gh, CLS_VEGETATION, 45, 4).slice(0, 7);
     const totalCells = gw * gh;
@@ -1173,7 +1256,6 @@ export async function runTiledDroneSegmentation(
       const contourGrid = traceComponentContour(
         comp.cells,
         gw,
-        gh,
         comp.minX,
         comp.maxX,
         comp.minY,
@@ -1183,9 +1265,9 @@ export async function runTiledDroneSegmentation(
         contourGrid.length >= 4
           ? rdpSimplify(contourGrid, 2.1)
           : convexHull(comp.cells.map((c) => [c % gw, (c / gw) | 0]));
-      const polygon = simplified.map(([gx, gy]) => cellToViewBox(gx, gy));
+      const polygon = simplified.map(([gx, gy]) => cellToNativePt(gx, gy));
       if (polygon.length < 3) return;
-      const { areaSqm } = polygonAreaAndPerimeter(polygon, metersPerViewUnit);
+      const { areaSqm } = polygonAreaAndPerimeter(polygon, metersPerNatPx);
       const veg: VegetationFeature = {
         id: `VEG-${shortCode}-${String(idx + 1).padStart(3, '0')}`,
         projectId: project.id,
@@ -1203,9 +1285,9 @@ export async function runTiledDroneSegmentation(
     });
   }
 
-  // 4. Extract Multi-Branch Road Centerlines via Zhang-Suen Morphological Skeletonization + RDP
+  // 4. Roads via Zhang-Suen Skeletonization
   if (enabled.has('Roads')) {
-    const rdComps = extractConnectedComponents(grid, gw, gh, CLS_ROAD, 42, 8).slice(0, 6);
+    const rdComps = extractConnectedComponents(grid, gw, gh, CLS_ROAD, 38, 8).slice(0, 6);
     let rdIdx = 0;
     for (const comp of rdComps) {
       const chains = skeletonizeRoadComponent(
@@ -1219,18 +1301,18 @@ export async function runTiledDroneSegmentation(
 
       for (const chain of chains) {
         const simplified = rdpSimplify(chain, 1.8);
-        const polyline = simplified.map(([gx, gy]) => cellToViewBox(gx, gy));
+        const polyline = simplified.map(([gx, gy]) => cellToNativePt(gx, gy));
         if (polyline.length < 2) continue;
 
-        let lengthUnits = 0;
+        let lengthNat = 0;
         for (let i = 1; i < polyline.length; i++) {
-          lengthUnits += Math.hypot(
+          lengthNat += Math.hypot(
             polyline[i][0] - polyline[i - 1][0],
             polyline[i][1] - polyline[i - 1][1]
           );
         }
-        const lengthM = Number((lengthUnits * metersPerViewUnit).toFixed(1));
-        if (lengthM < 18) continue;
+        const lengthM = Number((lengthNat * metersPerNatPx).toFixed(1));
+        if (lengthM < 16) continue;
 
         rdIdx++;
         const rd: RoadFeature = {
@@ -1253,12 +1335,12 @@ export async function runTiledDroneSegmentation(
     }
   }
 
-  // 5. Generate Candidate Parcel Block enclosing main residential cluster
+  // 5. Candidate Parcel Block
   if (features.some((f) => f.featureClass === 'building')) {
     const blds = features.filter((f): f is BuildingFeature => f.featureClass === 'building');
     const allPts = blds.flatMap((b) => b.polygon);
     const parcelHull = convexHull(allPts);
-    const { areaSqm } = polygonAreaAndPerimeter(parcelHull, metersPerViewUnit);
+    const { areaSqm } = polygonAreaAndPerimeter(parcelHull, metersPerNatPx);
     const pcl: ParcelFeature = {
       id: `PCL-${shortCode}-101`,
       projectId: project.id,
@@ -1289,11 +1371,13 @@ export async function runTiledDroneSegmentation(
       waterPct: Number(((watPxCount / totalPx) * 100).toFixed(1)),
       vegetationPct: Number(((vegPxCount / totalPx) * 100).toFixed(1)),
     },
+    coordWidth: natW,
+    coordHeight: natH,
   };
 
   return {
-    width: img.naturalWidth || w,
-    height: img.naturalHeight || h,
+    width: natW,
+    height: natH,
     outputs,
     features,
   };

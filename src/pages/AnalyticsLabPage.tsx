@@ -175,8 +175,7 @@ export function AnalyticsLabPage() {
   const selectedModel =
     MODEL_BENCHMARKS.find((m) => m.id === selectedModelId) ?? MODEL_BENCHMARKS[0];
 
-  // Export Preview Generation
-  const exportPreviewText = useMemo(() => {
+  const buildExportContent = (previewOnly: boolean) => {
     const projectLabel = activeProject ? `${activeProject.village} (${activeProject.id})` : 'None';
     const subset = activeProjectFeatures.filter((f) => {
       if (exportDataset === 'complete') return true;
@@ -193,14 +192,19 @@ export function AnalyticsLabPage() {
         exportDataset === 'roofs'
           ? 'feature_id,ward,roof_type,roof_confidence,area_sqm,model_version'
           : 'feature_id,class,ward,confidence,model_version,processing_date';
-      const rows = subset.slice(0, 8).map((f) => {
+      const slice = previewOnly ? subset.slice(0, 8) : subset;
+      const rows = slice.map((f) => {
         if (exportDataset === 'roofs' && f.featureClass === 'building') {
           const b = f as BuildingFeature;
           return `${b.id},${b.ward},${b.roofType},${b.roofConfidence},${b.areaSqm},${b.modelVersion}`;
         }
         return `${f.id},${f.featureClass},${f.ward},${f.confidence},${f.modelVersion},${f.processingDate}`;
       });
-      return [header, ...rows, subset.length > 8 ? `... (${subset.length - 8} more rows)` : '']
+      return [
+        header,
+        ...rows,
+        previewOnly && subset.length > 8 ? `... (${subset.length - 8} more rows)` : '',
+      ]
         .filter(Boolean)
         .join('\n');
     }
@@ -220,34 +224,72 @@ export function AnalyticsLabPage() {
       ].join('\n');
     }
 
-    const geojsonSample = {
+    const coordW =
+      activeProject?.segmentationOutputs?.coordWidth ?? activeProject?.orthophoto?.widthPx ?? 1000;
+    const coordH =
+      activeProject?.segmentationOutputs?.coordHeight ?? activeProject?.orthophoto?.heightPx ?? 562.5;
+    const bounds = activeProject?.orthophoto?.bounds;
+    const projectPt = ([x, y]: [number, number]): [number, number] => {
+      if (!bounds || !coordW || !coordH) return [x, y];
+      const lng = bounds.minLng + (x / coordW) * (bounds.maxLng - bounds.minLng);
+      const lat = bounds.maxLat - (y / coordH) * (bounds.maxLat - bounds.minLat);
+      return [Number(lng.toFixed(6)), Number(lat.toFixed(6))];
+    };
+
+    const items = previewOnly ? subset.slice(0, 2) : subset;
+    const geojsonPayload = {
       type: 'FeatureCollection',
       name: `${activeProject?.village ?? 'village'}_${exportDataset}`,
       crs: {
         type: 'name',
-        properties: { name: activeProject?.orthophoto?.crs ?? 'EPSG:32643' },
+        properties: { name: bounds ? 'EPSG:4326' : activeProject?.orthophoto?.crs ?? 'EPSG:32643' },
       },
       featureCount: subset.length,
-      features: subset.slice(0, 2).map((f) => ({
-        type: 'Feature',
-        id: f.id,
-        properties: {
-          class: f.featureClass,
-          ward: f.ward,
-          confidence: f.confidence,
-          modelVersion: f.modelVersion,
-        },
-        geometry: {
-          type: f.featureClass === 'road' ? 'LineString' : 'Polygon',
-          coordinates:
-            f.featureClass === 'road'
-              ? (f as RoadFeature).polyline.slice(0, 3)
-              : [(f as BuildingFeature).polygon?.slice(0, 3) ?? []],
-        },
-      })),
+      features: items.map((f) => {
+        if (f.featureClass === 'road') {
+          const line = (f as RoadFeature).polyline.map(projectPt);
+          return {
+            type: 'Feature',
+            id: f.id,
+            properties: {
+              class: f.featureClass,
+              ward: f.ward,
+              lengthM: (f as RoadFeature).lengthM,
+              confidence: f.confidence,
+              modelVersion: f.modelVersion,
+            },
+            geometry: {
+              type: 'LineString',
+              coordinates: previewOnly ? line.slice(0, 4) : line,
+            },
+          };
+        }
+        const poly = (f as BuildingFeature | WaterFeature | VegetationFeature).polygon ?? [];
+        const closed = poly.length > 0 ? [...poly, poly[0]].map(projectPt) : [];
+        return {
+          type: 'Feature',
+          id: f.id,
+          properties: {
+            class: f.featureClass,
+            ward: f.ward,
+            confidence: f.confidence,
+            modelVersion: f.modelVersion,
+          },
+          geometry: {
+            type: 'Polygon',
+            coordinates: [previewOnly ? closed.slice(0, 4) : closed],
+          },
+        };
+      }),
     };
-    return JSON.stringify(geojsonSample, null, 2);
-  }, [activeProject, activeProjectFeatures, exportDataset, exportFormat, analyticsData]);
+    return JSON.stringify(geojsonPayload, null, 2);
+  };
+
+  // Export Preview Generation
+  const exportPreviewText = useMemo(
+    () => buildExportContent(true),
+    [activeProject, activeProjectFeatures, exportDataset, exportFormat, analyticsData]
+  );
 
   const handleDownloadExport = () => {
     const slug = (activeProject?.village ?? 'village').toLowerCase().replace(/\s+/g, '_');
@@ -266,7 +308,8 @@ export function AnalyticsLabPage() {
         ? 'gpkg.json'
         : 'shp.manifest.json';
 
-    const blob = new Blob([exportPreviewText], { type: 'text/plain;charset=utf-8' });
+    const fullContent = buildExportContent(false);
+    const blob = new Blob([fullContent], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

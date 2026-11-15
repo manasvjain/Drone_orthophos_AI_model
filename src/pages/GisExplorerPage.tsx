@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Filter, Layers, PanelLeft, PanelRight, RotateCcw } from 'lucide-react';
 import { useGis } from '../context/GisContext';
 import {
@@ -18,7 +18,7 @@ const DEFAULT_FILTERS: ExplorerFilters = {
   featureType: 'all',
   roofTypes: ['RCC', 'Tiled', 'Tin', 'Other', 'Unknown'],
   minArea: 0,
-  maxArea: 500,
+  maxArea: 2500,
   minConfidence: 0.6,
   ward: 'All',
   modelVersion: 'All',
@@ -43,6 +43,10 @@ export function GisExplorerPage() {
   const [activeLayerLabel, setActiveLayerLabel] = useState<string>('Building Footprints');
   const [leftDrawerOpen, setLeftDrawerOpen] = useState(false);
   const [rightDrawerOpen, setRightDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    setZoomTargetId(null);
+  }, [activeProject?.id]);
 
   const wardsList = useMemo(() => {
     const set = new Set(activeProjectFeatures.map((f) => f.ward));
@@ -301,10 +305,10 @@ export function GisExplorerPage() {
             <input
               type="number"
               min={draftFilters.minArea}
-              max={2000}
+              max={10000}
               value={draftFilters.maxArea}
               onChange={(e) =>
-                setDraftFilters((p) => ({ ...p, maxArea: Number(e.target.value) || 500 }))
+                setDraftFilters((p) => ({ ...p, maxArea: Number(e.target.value) || 2500 }))
               }
               aria-label="Maximum building area"
               className="h-7 px-2 text-xs font-mono tabular-nums border border-[#E4E6DF] rounded-[4px]"
@@ -518,6 +522,17 @@ export function GisExplorerPage() {
           <FeatureInspector
             feature={selectedFeature}
             crs={activeProject?.orthophoto?.crs ?? 'EPSG:32643'}
+            orthophoto={activeProject?.orthophoto}
+            coordDims={{
+              w:
+                activeProject?.segmentationOutputs?.coordWidth ??
+                activeProject?.orthophoto?.widthPx ??
+                1000,
+              h:
+                activeProject?.segmentationOutputs?.coordHeight ??
+                activeProject?.orthophoto?.heightPx ??
+                562.5,
+            }}
             onZoomToFeature={(id) => {
               setZoomTargetId(null);
               window.requestAnimationFrame(() => setZoomTargetId(id));
@@ -529,6 +544,17 @@ export function GisExplorerPage() {
             <FeatureInspector
               feature={selectedFeature}
               crs={activeProject?.orthophoto?.crs ?? 'EPSG:32643'}
+              orthophoto={activeProject?.orthophoto}
+              coordDims={{
+                w:
+                  activeProject?.segmentationOutputs?.coordWidth ??
+                  activeProject?.orthophoto?.widthPx ??
+                  1000,
+                h:
+                  activeProject?.segmentationOutputs?.coordHeight ??
+                  activeProject?.orthophoto?.heightPx ??
+                  562.5,
+              }}
               onZoomToFeature={(id) => {
                 setZoomTargetId(null);
                 window.requestAnimationFrame(() => setZoomTargetId(id));

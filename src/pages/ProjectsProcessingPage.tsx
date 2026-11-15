@@ -40,6 +40,7 @@ export function ProjectsProcessingPage({
     deleteProject,
     setActivePage,
     setLayers,
+    backendHealth,
   } = useGis();
 
   const [maskPreviewTab, setMaskPreviewTab] = useState<'overlay' | 'buildings' | 'roads'>('overlay');
@@ -63,6 +64,7 @@ export function ProjectsProcessingPage({
 
   // Upload state
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const previousBlobUrlRef = useRef<string | null>(null);
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
@@ -150,6 +152,12 @@ export function ProjectsProcessingPage({
         );
         return;
       }
+      if (['tif', 'tiff', 'geotiff'].includes(ext) && !backendHealth.pythonBridgeReachable) {
+        setUploadError(
+          `Raw GeoTIFF/TIFF files ("${file.name}") cannot be decoded directly by browser canvas CV. Upload a PNG/JPG export for instant browser segmentation, or start the Python PyTorch Flask bridge (app_3c61c556.py on port 5000).`
+        );
+        return;
+      }
     }
 
     setUploadProgress(15);
@@ -183,14 +191,31 @@ export function ProjectsProcessingPage({
         imageUrl,
       };
       setUploadProgress(null);
+      if (
+        previousBlobUrlRef.current &&
+        previousBlobUrlRef.current !== imageUrl &&
+        previousBlobUrlRef.current.startsWith('blob:')
+      ) {
+        URL.revokeObjectURL(previousBlobUrlRef.current);
+      }
+      previousBlobUrlRef.current = imageUrl.startsWith('blob:') ? imageUrl : null;
       attachOrthophoto(activeProject.id, meta, file);
     };
 
+    const isRasterImage = !sampleImg && file && /\.(png|jpe?g)$/i.test(file.name);
     const targetUrl = sampleImg
       ? sampleImg.url
-      : file && /\.(png|jpe?g)$/i.test(file.name)
+      : isRasterImage
       ? URL.createObjectURL(file)
       : DRONE_IMG_2;
+
+    if (!sampleImg && file && /\.(tif|tiff|geotiff)$/i.test(file.name)) {
+      setUploadProgress(85);
+      window.setTimeout(() => {
+        finishUpload(1024, 1024, targetUrl);
+      }, 220);
+      return;
+    }
 
     const probe = new Image();
     probe.onload = () => {
@@ -200,9 +225,11 @@ export function ProjectsProcessingPage({
       }, 220);
     };
     probe.onerror = () => {
-      window.setTimeout(() => {
-        finishUpload(1024, 768, DRONE_IMG_2);
-      }, 220);
+      if (targetUrl.startsWith('blob:')) URL.revokeObjectURL(targetUrl);
+      setUploadProgress(null);
+      setUploadError(
+        `Could not decode "${file?.name ?? 'image'}". Verify the file is a valid PNG or JPG orthophoto.`
+      );
     };
     probe.src = targetUrl;
   };

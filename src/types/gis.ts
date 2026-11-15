@@ -65,6 +65,8 @@ export interface SegmentationOutputs {
     waterPct: number;
     vegetationPct: number;
   };
+  coordWidth?: number;
+  coordHeight?: number;
 }
 
 export interface VillageProject {
@@ -102,7 +104,7 @@ export interface GisFeatureBase {
 
 export interface BuildingFeature extends GisFeatureBase {
   featureClass: 'building';
-  polygon: [number, number][]; // 1000 x 562.5 normalized viewBox space
+  polygon: [number, number][]; // Native orthophoto pixel space [0..coordWidth, 0..coordHeight]
   areaSqm: number;
   perimeterM: number;
   roofType: RoofType;

@@ -37,15 +37,16 @@ interface GisMapCanvasProps {
   onUploadRequest?: () => void;
 }
 
-const VIEW_W = 1000;
-const VIEW_H = 562.5;
-
-function getFeatureBounds(feature: GisFeature): { cx: number; cy: number; span: number } {
+function getFeatureBounds(
+  feature: GisFeature,
+  viewW: number,
+  viewH: number
+): { cx: number; cy: number; span: number } {
   const pts =
     feature.featureClass === 'road'
       ? (feature as RoadFeature).polyline
       : (feature as BuildingFeature | WaterFeature | VegetationFeature | ParcelFeature).polygon;
-  if (!pts.length) return { cx: 500, cy: 281, span: 200 };
+  if (!pts.length) return { cx: viewW / 2, cy: viewH / 2, span: Math.min(viewW, viewH) * 0.35 };
   let minX = Infinity;
   let maxX = -Infinity;
   let minY = Infinity;
@@ -91,10 +92,33 @@ export function GisMapCanvas({
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<[number, number][]>([]);
   const [imgFailed, setImgFailed] = useState(false);
+  const [containerSize, setContainerSize] = useState<{ w: number; h: number }>({ w: 960, h: 540 });
+
+  const viewW = project?.segmentationOutputs?.coordWidth ?? project?.orthophoto?.widthPx ?? 1000;
+  const viewH = project?.segmentationOutputs?.coordHeight ?? project?.orthophoto?.heightPx ?? 562.5;
+  const vScale = Math.max(0.6, viewW / 1000);
+  const gsdM = (project?.orthophoto?.resolutionCm ?? 5.0) / 100;
+  const metersPerNatPx = Math.max(0.05, Math.min(0.8, (400 / viewW) * (gsdM / 0.05)));
 
   useEffect(() => {
     setImgFailed(false);
   }, [project?.id, project?.orthophoto?.imageUrl]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) {
+        setContainerSize({
+          w: Math.max(1, entry.contentRect.width),
+          h: Math.max(1, entry.contentRect.height),
+        });
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   useEffect(() => {
     onZoomStateChange?.(zoom);
@@ -107,19 +131,21 @@ export function GisMapCanvas({
     setMeasurePoints([]);
   }, [project?.id]);
 
-  // Programmatic Zoom-to-Feature
+  // Programmatic Zoom-to-Feature (accounts for exact object-cover / xMidYMid slice scale)
   useEffect(() => {
     if (!zoomTargetFeatureId) return;
     const target = features.find((f) => f.id === zoomTargetFeatureId);
     if (!target || !containerRef.current) return;
-    const { cx, cy, span } = getFeatureBounds(target);
-    const nextZoom = Math.min(3.5, Math.max(1.8, 320 / Math.max(span, 60)));
+    const { cx, cy, span } = getFeatureBounds(target, viewW, viewH);
+    const minDim = Math.min(viewW, viewH);
+    const nextZoom = Math.min(3.8, Math.max(1.6, (minDim * 0.52) / Math.max(span, minDim * 0.1)));
     const rect = containerRef.current.getBoundingClientRect();
-    const normDx = (0.5 - cx / VIEW_W) * rect.width * nextZoom;
-    const normDy = (0.5 - cy / VIEW_H) * rect.height * nextZoom;
+    const coverScale = Math.max(rect.width / viewW, rect.height / viewH);
+    const nextPanX = (viewW / 2 - cx) * nextZoom * coverScale;
+    const nextPanY = (viewH / 2 - cy) * nextZoom * coverScale;
     setZoom(Number(nextZoom.toFixed(2)));
-    setPan({ x: normDx, y: normDy });
-  }, [zoomTargetFeatureId, features]);
+    setPan({ x: nextPanX, y: nextPanY });
+  }, [zoomTargetFeatureId, features, viewW, viewH]);
 
   useEffect(() => {
     const onFsChange = () => {
@@ -157,14 +183,18 @@ export function GisMapCanvas({
     handleZoomBy(delta);
   };
 
+  const screenToViewBox = (clientX: number, clientY: number, rect: DOMRect): [number, number] => {
+    const coverScale = Math.max(rect.width / viewW, rect.height / viewH);
+    const vx = viewW / 2 + (clientX - rect.left - rect.width / 2 - pan.x) / (zoom * coverScale);
+    const vy = viewH / 2 + (clientY - rect.top - rect.height / 2 - pan.y) / (zoom * coverScale);
+    return [Math.max(0, Math.min(viewW, vx)), Math.max(0, Math.min(viewH, vy))];
+  };
+
   const handlePointerDown = (e: React.PointerEvent) => {
     if ((e.target as HTMLElement).closest('button, select, input')) return;
     if (measureMode && containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      const relX = (e.clientX - rect.left - rect.width / 2 - pan.x) / zoom + rect.width / 2;
-      const relY = (e.clientY - rect.top - rect.height / 2 - pan.y) / zoom + rect.height / 2;
-      const vx = Math.max(0, Math.min(VIEW_W, (relX / rect.width) * VIEW_W));
-      const vy = Math.max(0, Math.min(VIEW_H, (relY / rect.height) * VIEW_H));
+      const [vx, vy] = screenToViewBox(e.clientX, e.clientY, rect);
       setMeasurePoints((prev) => (prev.length >= 2 ? [[vx, vy]] : [...prev, [vx, vy]]));
       return;
     }
@@ -182,10 +212,9 @@ export function GisMapCanvas({
   const handlePointerMove = (e: React.PointerEvent) => {
     if (containerRef.current && project?.orthophoto) {
       const rect = containerRef.current.getBoundingClientRect();
-      const relX = (e.clientX - rect.left - rect.width / 2 - pan.x) / zoom + rect.width / 2;
-      const relY = (e.clientY - rect.top - rect.height / 2 - pan.y) / zoom + rect.height / 2;
-      const u = Math.max(0, Math.min(1, relX / rect.width));
-      const v = Math.max(0, Math.min(1, relY / rect.height));
+      const [vx, vy] = screenToViewBox(e.clientX, e.clientY, rect);
+      const u = vx / viewW;
+      const v = vy / viewH;
       const b = project.orthophoto.bounds;
       const lat = b.maxLat - v * (b.maxLat - b.minLat);
       const lng = b.minLng + u * (b.maxLng - b.minLng);
@@ -230,15 +259,16 @@ export function GisMapCanvas({
     [features]
   );
 
-  // Compute approximate ground distance for measurement tool (~0.68m per viewBox unit for village extent)
+  // Ground distance matching metersPerNatPx used during feature extraction
   const measuredDistanceM = useMemo(() => {
     if (measurePoints.length < 2) return null;
     const [[x1, y1], [x2, y2]] = measurePoints;
     const pxDist = Math.hypot(x2 - x1, y2 - y1);
-    return (pxDist * 0.68).toFixed(1);
-  }, [measurePoints]);
+    return (pxDist * metersPerNatPx).toFixed(1);
+  }, [measurePoints, metersPerNatPx]);
 
-  const scaleMeters = Math.round(50 / zoom);
+  const coverScaleNow = Math.max(containerSize.w / viewW, containerSize.h / viewH);
+  const scaleMeters = Math.max(1, Math.round((56 / (zoom * coverScaleNow)) * metersPerNatPx));
 
   if (!project || !project.orthophoto) {
     return (
@@ -327,7 +357,7 @@ export function GisMapCanvas({
 
         {/* Vector Overlay SVG */}
         <svg
-          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+          viewBox={`0 0 ${viewW} ${viewH}`}
           preserveAspectRatio="xMidYMid slice"
           className="absolute inset-0 w-full h-full"
         >
@@ -343,7 +373,7 @@ export function GisMapCanvas({
                   fill="#5E8061"
                   fillOpacity={selected ? 0.48 : hovered ? 0.38 : 0.26}
                   stroke={selected ? '#2F4A38' : '#4B6C4E'}
-                  strokeWidth={selected ? 2.4 : 1.3}
+                  strokeWidth={(selected ? 2.4 : 1.3) * vScale}
                   className="cursor-pointer transition-opacity"
                   onMouseEnter={() => setHoveredId(veg.id)}
                   onMouseLeave={() => setHoveredId(null)}
@@ -367,7 +397,7 @@ export function GisMapCanvas({
                   fill="#567C94"
                   fillOpacity={selected ? 0.56 : hovered ? 0.46 : 0.36}
                   stroke={selected ? '#264459' : '#3E6278'}
-                  strokeWidth={selected ? 2.6 : 1.5}
+                  strokeWidth={(selected ? 2.6 : 1.5) * vScale}
                   className="cursor-pointer transition-opacity"
                   onMouseEnter={() => setHoveredId(wb.id)}
                   onMouseLeave={() => setHoveredId(null)}
@@ -390,8 +420,8 @@ export function GisMapCanvas({
                     fill="#7B7387"
                     fillOpacity={selected ? 0.14 : 0.04}
                     stroke="#7B7387"
-                    strokeWidth={selected ? 2.2 : 1.4}
-                    strokeDasharray="6 4"
+                    strokeWidth={(selected ? 2.2 : 1.4) * vScale}
+                    strokeDasharray={`${6 * vScale} ${4 * vScale}`}
                     className="cursor-pointer"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -423,7 +453,7 @@ export function GisMapCanvas({
                     points={ptsToAttr(rd.polyline)}
                     fill="none"
                     stroke={selected ? '#5E3D10' : '#7C5620'}
-                    strokeWidth={selected ? 8 : hovered ? 7 : 6}
+                    strokeWidth={(selected ? 8 : hovered ? 7 : 6) * vScale}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                     strokeOpacity={0.75}
@@ -433,7 +463,7 @@ export function GisMapCanvas({
                     points={ptsToAttr(rd.polyline)}
                     fill="none"
                     stroke={selected ? '#E5A952' : '#C88E41'}
-                    strokeWidth={selected ? 4.5 : 3.5}
+                    strokeWidth={(selected ? 4.5 : 3.5) * vScale}
                     strokeLinecap="round"
                     strokeLinejoin="round"
                   />
@@ -453,7 +483,7 @@ export function GisMapCanvas({
                   fill={selected ? '#A65D42' : '#B77B61'}
                   fillOpacity={selected ? 0.62 : hovered ? 0.52 : 0.38}
                   stroke={selected ? '#FFFFFF' : '#8E533B'}
-                  strokeWidth={selected ? 2.4 : 1.4}
+                  strokeWidth={(selected ? 2.4 : 1.4) * vScale}
                   className="cursor-pointer transition-opacity"
                   onMouseEnter={() => setHoveredId(bld.id)}
                   onMouseLeave={() => setHoveredId(null)}
@@ -473,10 +503,10 @@ export function GisMapCanvas({
                   key={i}
                   cx={x}
                   cy={y}
-                  r={4 / zoom}
+                  r={(4 * vScale) / zoom}
                   fill="#252A27"
                   stroke="#FFFFFF"
-                  strokeWidth={1.5 / zoom}
+                  strokeWidth={(1.5 * vScale) / zoom}
                 />
               ))}
               {measurePoints.length === 2 && (
@@ -486,8 +516,8 @@ export function GisMapCanvas({
                   x2={measurePoints[1][0]}
                   y2={measurePoints[1][1]}
                   stroke="#252A27"
-                  strokeWidth={2 / zoom}
-                  strokeDasharray="4 3"
+                  strokeWidth={(2 * vScale) / zoom}
+                  strokeDasharray={`${4 * vScale} ${3 * vScale}`}
                 />
               )}
             </g>
@@ -573,6 +603,7 @@ export function GisMapCanvas({
                   {(
                     [
                       ['orthophoto', 'Orthophoto'],
+                      ['segmentationOverlay', 'U-Net Pixel Mask'],
                       ['buildings', 'Building Footprints'],
                       ['roads', 'Road Network'],
                       ['water', 'Water Bodies'],

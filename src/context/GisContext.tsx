@@ -106,7 +106,43 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
 
   // Store actual uploaded File objects by projectId so POST /api/analyze can send the real file
   const uploadedFilesRef = useRef<Map<string, File>>(new Map());
+  const activeProjectIdRef = useRef<string>(activeProjectId);
+  activeProjectIdRef.current = activeProjectId;
   const initializedRef = useRef(false);
+
+  const runBootstrapSegmentation = async () => {
+    const bootstrapIds = ['PRJ-HR-2026-014', 'PRJ-UP-2026-021'];
+    for (const pid of bootstrapIds) {
+      const prj = INITIAL_PROJECTS.find((p) => p.id === pid);
+      if (!prj?.orthophoto?.imageUrl) continue;
+      try {
+        const result = await runTiledDroneSegmentation(prj.orthophoto.imageUrl, prj);
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.id === pid
+              ? {
+                  ...p,
+                  orthophoto: p.orthophoto
+                    ? { ...p.orthophoto, widthPx: result.width, heightPx: result.height }
+                    : null,
+                  segmentationOutputs: result.outputs,
+                }
+              : p
+          )
+        );
+        setFeatures((prev) => [
+          ...prev.filter((f) => f.projectId !== pid),
+          ...result.features,
+        ]);
+        if (activeProjectIdRef.current === pid) {
+          const firstBld = result.features.find((f) => f.featureClass === 'building');
+          if (firstBld) setSelectedFeatureId(firstBld.id);
+        }
+      } catch (err) {
+        console.warn(`Initial segmentation skipped for ${pid}:`, err);
+      }
+    }
+  };
 
   // Check Express /api/health & run initial real segmentation on the two uploaded UAV orthophotos
   useEffect(() => {
@@ -129,40 +165,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
         setBackendHealth((prev) => ({ ...prev, checked: true }));
       });
 
-    // Run real 256x256 tiled pixel segmentation + vectorization on the two uploaded drone images
-    const bootstrapIds = ['PRJ-HR-2026-014', 'PRJ-UP-2026-021'];
-    (async () => {
-      for (const pid of bootstrapIds) {
-        const prj = INITIAL_PROJECTS.find((p) => p.id === pid);
-        if (!prj?.orthophoto?.imageUrl) continue;
-        try {
-          const result = await runTiledDroneSegmentation(prj.orthophoto.imageUrl, prj);
-          setProjects((prev) =>
-            prev.map((p) =>
-              p.id === pid
-                ? {
-                    ...p,
-                    orthophoto: p.orthophoto
-                      ? { ...p.orthophoto, widthPx: result.width, heightPx: result.height }
-                      : null,
-                    segmentationOutputs: result.outputs,
-                  }
-                : p
-            )
-          );
-          setFeatures((prev) => [
-            ...prev.filter((f) => f.projectId !== pid),
-            ...result.features,
-          ]);
-          if (pid === INITIAL_PROJECTS[0].id) {
-            const firstBld = result.features.find((f) => f.featureClass === 'building');
-            if (firstBld) setSelectedFeatureId(firstBld.id);
-          }
-        } catch (err) {
-          console.warn(`Initial segmentation skipped for ${pid}:`, err);
-        }
-      }
-    })();
+    void runBootstrapSegmentation();
   }, []);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
@@ -438,7 +441,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
         ]);
 
         const firstBld = segResult.features.find((f) => f.featureClass === 'building');
-        if (firstBld && activeProjectId === projectId) {
+        if (firstBld && activeProjectIdRef.current === projectId) {
           setSelectedFeatureId(firstBld.id);
         }
 
@@ -479,9 +482,11 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
   };
 
   const deleteProject = (projectId: string) => {
+    uploadedFilesRef.current.delete(projectId);
+    setFeatures((prev) => prev.filter((f) => f.projectId !== projectId));
     setProjects((prev) => {
       const next = prev.filter((p) => p.id !== projectId);
-      if (activeProjectId === projectId) {
+      if (activeProjectIdRef.current === projectId) {
         setActiveProjectId(next[0]?.id ?? '');
       }
       return next;
@@ -489,17 +494,22 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
   };
 
   const clearAllProjects = () => {
+    uploadedFilesRef.current.clear();
     setProjects([]);
+    setFeatures([]);
     setActiveProjectId('');
     setSelectedFeatureId(null);
   };
 
   const resetDemoData = () => {
+    uploadedFilesRef.current.clear();
     setProjects(INITIAL_PROJECTS);
     setFeatures(INITIAL_FEATURES);
     setActiveProjectId(INITIAL_PROJECTS[0].id);
+    activeProjectIdRef.current = INITIAL_PROJECTS[0].id;
     setSelectedFeatureId(null);
     setNotifications(INITIAL_NOTIFICATIONS);
+    void runBootstrapSegmentation();
   };
 
   return (
