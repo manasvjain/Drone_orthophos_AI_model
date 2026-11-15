@@ -87,6 +87,7 @@ export const INITIAL_PROJECTS: VillageProject[] = [
       widthPx: 896,
       heightPx: 448,
       crs: 'EPSG:32643 (WGS 84 / UTM zone 43N)',
+      georeferenced: false,
       bounds: {
         minLat: 28.8929,
         maxLat: 28.8979,
@@ -124,6 +125,7 @@ export const INITIAL_PROJECTS: VillageProject[] = [
       widthPx: 1408,
       heightPx: 1296,
       crs: 'EPSG:32644 (WGS 84 / UTM zone 44N)',
+      georeferenced: false,
       bounds: {
         minLat: 26.9234,
         maxLat: 26.9288,
@@ -161,6 +163,7 @@ export const INITIAL_PROJECTS: VillageProject[] = [
       widthPx: 1600,
       heightPx: 900,
       crs: 'EPSG:32644 (WGS 84 / UTM zone 44N)',
+      georeferenced: false,
       bounds: {
         minLat: 21.1422,
         maxLat: 21.1494,
@@ -199,6 +202,7 @@ export const INITIAL_PROJECTS: VillageProject[] = [
       widthPx: 1408,
       heightPx: 792,
       crs: 'EPSG:32643 (WGS 84 / UTM zone 43N)',
+      georeferenced: false,
       bounds: {
         minLat: 23.1968,
         maxLat: 23.202,
