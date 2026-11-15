@@ -1,9 +1,11 @@
-
+Flask
+flask-cors
+gunicorn
 torch
 torchvision
 segmentation-models-pytorch
 streamlit
-opencv-python
+opencv-python-headless
 pillow
 matplotlib
 numpy
