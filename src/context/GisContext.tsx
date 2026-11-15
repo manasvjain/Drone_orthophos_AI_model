@@ -782,31 +782,43 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
             method: 'POST',
             body: form,
           });
-          if (apiRes.ok) {
-            const payload = (await apiRes.json()) as {
-              source?: string;
-              overlay?: string;
-              buildings?: string;
-              roads?: string;
-              classes?: string;
-            };
-            if (
-              payload.source === 'pytorch-flask' &&
-              payload.overlay &&
-              payload.buildings &&
-              payload.roads &&
-              payload.classes
-            ) {
-              flaskMasks = {
-                overlayUrl: payload.overlay,
-                buildingsMaskUrl: payload.buildings,
-                roadsMaskUrl: payload.roads,
-                classesMaskUrl: payload.classes,
-              };
-            }
+          const responseText = await apiRes.text();
+          let payload: {
+            source?: string;
+            overlay?: string;
+            buildings?: string;
+            roads?: string;
+            classes?: string;
+            error?: string;
+          };
+          try {
+            payload = JSON.parse(responseText);
+          } catch {
+            throw new Error(`U-Net API returned invalid JSON (HTTP ${apiRes.status}).`);
           }
-        } catch {
-          // Proceed with local tiled CV + TensorFlow.js RoofNet CNN
+
+          if (!apiRes.ok) {
+            throw new Error(payload.error || `U-Net API request failed (HTTP ${apiRes.status}).`);
+          }
+          if (
+            payload.source !== 'pytorch-flask' ||
+            !payload.overlay ||
+            !payload.buildings ||
+            !payload.roads ||
+            !payload.classes
+          ) {
+            throw new Error('U-Net API response is missing its source marker or one or more prediction masks.');
+          }
+
+          flaskMasks = {
+            overlayUrl: payload.overlay,
+            buildingsMaskUrl: payload.buildings,
+            roadsMaskUrl: payload.roads,
+            classesMaskUrl: payload.classes,
+          };
+        } catch (apiError) {
+          const message = apiError instanceof Error ? apiError.message : String(apiError);
+          throw new Error(`PyTorch U-Net was not used: ${message}`);
         }
 
         const segResult = await runTiledDroneSegmentation(
@@ -882,7 +894,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
           {
             id: `NTF-${Date.now()}`,
             title: `${target.village} extraction completed`,
-            detail: `Extracted ${segResult.features.length} features with TensorFlow.js RoofNet-2D CNN${
+            detail: `Extracted ${segResult.features.length} features with ${segResult.outputs.inferenceEngine === 'pytorch-flask' ? 'PyTorch U-Net' : 'browser CV fallback'}${
               authUserRef.current ? ' & saved to Firestore' : ''
             }.`,
             timestamp: 'Just now',
