@@ -103,7 +103,8 @@ def predict(image, model, labels, tile_size=256):
     buildings = (classes == 1).astype(np.uint8) * 255
     roads = (classes == 4).astype(np.uint8) * 255
 
-    return overlay, buildings, roads
+    class_mask = classes.astype(np.uint8)
+    return overlay, buildings, roads, class_mask
 
 
 def data_url(array):
@@ -143,7 +144,7 @@ def analyze():
     try:
         model, labels = load_model()
 
-        overlay, buildings, roads = predict(
+        overlay, buildings, roads, class_mask = predict(
             image, model, labels
         )
 
@@ -166,7 +167,8 @@ def analyze():
         "height": image.height,
         "overlay": data_url(overlay),
         "buildings": data_url(buildings),
-        "roads": data_url(roads)
+        "roads": data_url(roads),
+        "classes": data_url(class_mask)
     })
 
 
