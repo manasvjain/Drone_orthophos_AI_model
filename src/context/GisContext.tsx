@@ -288,15 +288,17 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
     if (initializedRef.current) return;
     initializedRef.current = true;
 
-    fetch('/api/health')
+    fetch(`${API_BASE_URL}/api/health`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data) {
           setBackendHealth({
-            checked: true,
-            pythonBridgeReachable: Boolean(data.pythonBridgeReachable),
-            modelFilePresent: Boolean(data.modelFilePresent),
-            activeEngine: data.activeEngine || 'tiled-cv-segmentation',
+             checked: true,
+             modelFilePresent: Boolean(data.model_file),
+             pythonBridgeReachable: Boolean(data.ok),
+             activeEngine: data.model_file
+              ? 'pytorch-flask'
+              : 'tiled-cv-segmentation',
           });
         }
       })
@@ -776,7 +778,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
             form.append('image', blob, target.orthophoto!.fileName);
           }
 
-          const apiRes = await fetch('/api/analyze', {
+          const apiRes = await fetch(`${API_BASE_URL}/api/analyze`, {
             method: 'POST',
             body: form,
           });
