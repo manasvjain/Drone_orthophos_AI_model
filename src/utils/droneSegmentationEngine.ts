@@ -1405,6 +1405,10 @@ export async function runTiledDroneSegmentation(
       options?.flaskMasks?.buildingsMaskUrl ?? bldCanvas.toDataURL('image/png'),
     roadsMaskUrl: options?.flaskMasks?.roadsMaskUrl ?? rdCanvas.toDataURL('image/png'),
     inferenceEngine: options?.flaskMasks ? 'pytorch-flask' : 'tiled-cv-engine',
+    measurementQuality:
+      project.orthophoto?.georeferenced && (project.orthophoto?.resolutionCm ?? 0) > 0
+        ? 'calibrated'
+        : 'estimated',
     tileSizeUsed: tileSize,
     inferenceDurationMs: Math.round(performance.now() - t0),
     pixelCoverage: {
