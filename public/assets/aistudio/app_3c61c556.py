@@ -4,13 +4,26 @@
 import os
 import base64
 import io
+import threading
 from functools import lru_cache
 from pathlib import Path
+
+# Keep numerical libraries from creating many CPU threads on a 512 MB instance.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
 
 import cv2
 import numpy as np
 import torch
 import segmentation_models_pytorch as smp
+
+torch.set_num_threads(1)
+try:
+    torch.set_num_interop_threads(1)
+except RuntimeError:
+    pass
+
+cv2.setNumThreads(1)
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
@@ -18,6 +31,8 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parent
 MODEL_PATH = ROOT / "final_drone_model.pth"
+MAX_INFERENCE_DIM = 1536
+inference_lock = threading.Lock()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024
@@ -55,6 +70,7 @@ def load_model():
     return model, np.asarray(checkpoint["labels"], dtype=np.uint8)
 
 
+@torch.inference_mode()
 def predict(image, model, labels, tile_size=256):
     original = np.asarray(image.convert("RGB"))
     h, w = original.shape[:2]
@@ -138,17 +154,23 @@ def analyze():
 
     try:
         image = Image.open(upload.stream).convert("RGB")
+        # Bound peak RAM for large orthophotos; the frontend scales masks to its map canvas.
+        image.thumbnail(
+            (MAX_INFERENCE_DIM, MAX_INFERENCE_DIM),
+            Image.Resampling.LANCZOS
+        )
     except Exception:
         return jsonify({
             "error": "Unable to open image. Try JPG or PNG."
         }), 400
 
     try:
-        model, labels = load_model()
-
-        overlay, buildings, roads, class_mask = predict(
-            image, model, labels
-        )
+        # Serialize inference so simultaneous uploads cannot exceed the free-instance RAM limit.
+        with inference_lock:
+            model, labels = load_model()
+            overlay, buildings, roads, class_mask = predict(
+                image, model, labels
+            )
 
     except FileNotFoundError:
         return jsonify({
