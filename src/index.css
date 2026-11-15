@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --color-canvas: #F7F7F2;
+  --color-surface: #FFFFFF;
+  --color-brand: #496B54;
+  --color-brand-hover: #3D5B47;
+  --color-olive: #68775B;
+  --color-ink: #252A27;
+  --color-muted: #727A75;
+  --color-line: #E4E6DF;
+  --color-terracotta: #B77B61;
+  --color-road: #C88E41;
+  --color-water: #567C94;
+  --color-vegetation: #5E8061;
+  --color-parcel: #7B7387;
+}
+
+@layer base {
+  html,
+  body {
+    font-family: var(--font-sans);
+    background-color: #F7F7F2;
+    color: #252A27;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Subtle engineered scrollbars for dense GIS panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #D5D8CF;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #B8BDB2;
+}
