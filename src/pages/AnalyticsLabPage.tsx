@@ -690,6 +690,7 @@ export function AnalyticsLabPage() {
             {activeProject && (
               <button
                 type="button"
+                disabled={selectedModel.id !== 'U-Net'}
                 onClick={() =>
                   updateProcessingConfig(activeProject.id, {
                     modelUsed: selectedModel.id,
@@ -697,13 +698,15 @@ export function AnalyticsLabPage() {
                     enabledClasses: activeProject.enabledClasses,
                   })
                 }
-                className="w-full h-9 bg-[#496B54] hover:bg-[#3D5B47] text-white text-xs font-medium rounded-[4px] flex items-center justify-center gap-1.5"
+                className="w-full h-9 bg-[#496B54] hover:bg-[#3D5B47] disabled:bg-[#AEB5AF] disabled:cursor-not-allowed text-white text-xs font-medium rounded-[4px] flex items-center justify-center gap-1.5"
               >
                 <Check size={14} />
                 <span>
-                  {activeProject.modelUsed === selectedModel.id
+                  {selectedModel.id !== 'U-Net'
+                    ? 'Reference only — not connected to inference API'
+                    : activeProject.modelUsed === 'U-Net'
                     ? `Active on ${activeProject.village}`
-                    : `Select ${selectedModel.id} for ${activeProject.village}`}
+                    : `Select U-Net for ${activeProject.village}`}
                 </span>
               </button>
             )}
