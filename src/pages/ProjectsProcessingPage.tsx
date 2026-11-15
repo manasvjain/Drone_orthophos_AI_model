@@ -145,16 +145,16 @@ export function ProjectsProcessingPage({
 
     if (!sampleImg && file) {
       const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
-      const accepted = ['tif', 'tiff', 'geotiff', 'jpg', 'jpeg', 'png'];
+      const accepted = ['jpg', 'jpeg', 'png'];
       if (!accepted.includes(ext)) {
         setUploadError(
-          `Unsupported file format ".${ext}". Accepted formats: GeoTIFF, TIFF, JPG, PNG.`
+          `Unsupported file format ".${ext}". Accepted formats: JPG, PNG.`
         );
         return;
       }
-      if (['tif', 'tiff', 'geotiff'].includes(ext) && !backendHealth.pythonBridgeReachable) {
+      if (['tif', 'tiff', 'geotiff'].includes(ext)) {
         setUploadError(
-          `Raw GeoTIFF/TIFF files ("${file.name}") cannot be decoded directly by browser canvas CV. Upload a PNG/JPG export for instant browser segmentation, or start the Python PyTorch Flask bridge (app_3c61c556.py on port 5000).`
+          'GeoTIFF/TIFF upload is not fully supported yet. Export the orthophoto as PNG or JPG first; the current workflow cannot preserve GeoTIFF georeferencing.'
         );
         return;
       }
@@ -169,7 +169,7 @@ export function ProjectsProcessingPage({
         : file?.name.toLowerCase().endsWith('.jpg') ||
           file?.name.toLowerCase().endsWith('.jpeg')
         ? 'JPG'
-        : 'GeoTIFF';
+        : 'PNG';
 
       const meta: OrthophotoMetadata = {
         fileName: sampleImg ? sampleImg.name : file?.name ?? 'orthophoto.tif',
@@ -179,14 +179,14 @@ export function ProjectsProcessingPage({
         format: formatGuess,
         widthPx,
         heightPx,
-        crs: 'EPSG:32643 (WGS 84 / UTM zone 43N)',
+        crs: 'Not embedded — approximate project location',
         bounds: {
           minLat: Number((activeProject.latitude - 0.0025).toFixed(4)),
           maxLat: Number((activeProject.latitude + 0.0025).toFixed(4)),
           minLng: Number((activeProject.longitude - 0.0046).toFixed(4)),
           maxLng: Number((activeProject.longitude + 0.0046).toFixed(4)),
         },
-        resolutionCm: 4.8,
+        resolutionCm: 0,
         bands: formatGuess === 'JPG' ? 3 : 4,
         imageUrl,
       };
@@ -457,7 +457,7 @@ export function ProjectsProcessingPage({
                     Orthophoto Upload — {activeProject.village}
                   </h2>
                   <p className="text-[11px] text-[#727A75] mt-0.5">
-                    Accepted formats: GeoTIFF, TIFF, JPG, PNG · Max recommended size: 2 GB
+                    Accepted formats: JPG, PNG · GeoTIFF support with CRS preservation is coming soon
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
