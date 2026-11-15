@@ -764,7 +764,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
         }
 
         let flaskMasks:
-          | { overlayUrl: string; buildingsMaskUrl: string; roadsMaskUrl: string }
+          | { overlayUrl: string; buildingsMaskUrl: string; roadsMaskUrl: string; classesMaskUrl: string }
           | undefined;
 
         try {
@@ -788,17 +788,20 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
               overlay?: string;
               buildings?: string;
               roads?: string;
+              classes?: string;
             };
             if (
               payload.source === 'pytorch-flask' &&
               payload.overlay &&
               payload.buildings &&
-              payload.roads
+              payload.roads &&
+              payload.classes
             ) {
               flaskMasks = {
                 overlayUrl: payload.overlay,
                 buildingsMaskUrl: payload.buildings,
                 roadsMaskUrl: payload.roads,
+                classesMaskUrl: payload.classes,
               };
             }
           }
