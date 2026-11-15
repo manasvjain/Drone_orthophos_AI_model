@@ -178,7 +178,8 @@ export function ProjectsProcessingPage({
         format: formatGuess,
         widthPx,
         heightPx,
-        crs: 'Not embedded — approximate project location',
+        crs: 'Not georeferenced',
+        georeferenced: false,
         bounds: {
           minLat: Number((activeProject.latitude - 0.0025).toFixed(4)),
           maxLat: Number((activeProject.latitude + 0.0025).toFixed(4)),
