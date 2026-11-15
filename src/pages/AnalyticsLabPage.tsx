@@ -172,7 +172,7 @@ export function AnalyticsLabPage() {
         `SVAMITVA AI — VILLAGE SURVEY MAPPING REPORT`,
         `Project: ${projectLabel}`,
         `District / State: ${activeProject?.district ?? '-'}, ${activeProject?.state ?? '-'}`,
-        `CRS: ${activeProject?.orthophoto?.crs ?? 'EPSG:32643'}`,
+        `CRS: ${activeProject?.orthophoto?.georeferenced ? activeProject.orthophoto.crs : 'Not georeferenced — coordinates remain in image pixels'}`,
         `Model: ${activeProject?.modelVersion ?? '-'}`,
         `--------------------------------------------------`,
         `Extracted Buildings: ${analyticsData.blds.length} (${analyticsData.totalBuildingArea.toFixed(1)} m²)`,
@@ -187,8 +187,9 @@ export function AnalyticsLabPage() {
     const coordH =
       activeProject?.segmentationOutputs?.coordHeight ?? activeProject?.orthophoto?.heightPx ?? 562.5;
     const bounds = activeProject?.orthophoto?.bounds;
+    const hasGeoreferencing = Boolean(activeProject?.orthophoto?.georeferenced && bounds);
     const projectPt = ([x, y]: [number, number]): [number, number] => {
-      if (!bounds || !coordW || !coordH) return [x, y];
+      if (!hasGeoreferencing || !bounds || !coordW || !coordH) return [x, y];
       const lng = bounds.minLng + (x / coordW) * (bounds.maxLng - bounds.minLng);
       const lat = bounds.maxLat - (y / coordH) * (bounds.maxLat - bounds.minLat);
       return [Number(lng.toFixed(6)), Number(lat.toFixed(6))];
@@ -198,10 +199,11 @@ export function AnalyticsLabPage() {
     const geojsonPayload = {
       type: 'FeatureCollection',
       name: `${activeProject?.village ?? 'village'}_${exportDataset}`,
-      crs: {
-        type: 'name',
-        properties: { name: bounds ? 'EPSG:4326' : activeProject?.orthophoto?.crs ?? 'EPSG:32643' },
-      },
+      crs: hasGeoreferencing
+        ? { type: 'name', properties: { name: 'EPSG:4326' } }
+        : null,
+      coordinate_space: hasGeoreferencing ? 'EPSG:4326' : 'orthophoto_pixel_coordinates',
+      georeferenced: hasGeoreferencing,
       featureCount: subset.length,
       features: items.map((f) => {
         if (f.featureClass === 'road') {
@@ -1013,7 +1015,7 @@ export function AnalyticsLabPage() {
                 <span>Export & Report Preview ({exportFormat})</span>
               </div>
               <span className="text-[11px] font-mono text-[#727A75]">
-                {activeProject?.orthophoto?.crs ?? 'EPSG:32643'}
+                {activeProject?.orthophoto?.georeferenced ? activeProject.orthophoto.crs : 'Image pixels (not georeferenced)'}
               </span>
             </div>
             <pre className="p-4 text-[11px] font-mono text-[#252A27] bg-white overflow-x-auto max-h-[460px] leading-relaxed">
