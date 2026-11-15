@@ -58,6 +58,7 @@ export interface SegmentationOutputs {
   buildingsMaskUrl: string;
   roadsMaskUrl: string;
   inferenceEngine: 'pytorch-flask' | 'tiled-cv-engine';
+  measurementQuality?: 'calibrated' | 'estimated';
   tileSizeUsed: number;
   inferenceDurationMs: number;
   pixelCoverage: {
