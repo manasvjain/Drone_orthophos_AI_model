@@ -30,7 +30,7 @@ interface NavItem {
 }
 
 export function Sidebar({ mobileOpen, onCloseMobile, onRequestLogout }: SidebarProps) {
-  const { activePage, setActivePage, setAnalyticsTab } = useGis();
+  const { activePage, setActivePage, setAnalyticsTab, authUser } = useGis();
 
   const sections: { title: string; items: NavItem[] }[] = [
     {
@@ -154,14 +154,18 @@ export function Sidebar({ mobileOpen, onCloseMobile, onRequestLogout }: SidebarP
       <div className="p-3 border-t border-[#E4E6DF] bg-[#FAFBF8]">
         <div className="flex items-center gap-2.5 min-w-0">
           <img
-            src={ANALYST_AVATAR}
-            alt="Arjun Kulkarni"
+            src={authUser?.photoURL || ANALYST_AVATAR}
+            alt={authUser?.displayName || 'Arjun Kulkarni'}
             referrerPolicy="no-referrer"
             className="w-8 h-8 rounded-[4px] object-cover border border-[#E4E6DF] shrink-0 bg-[#E4E6DF]"
           />
           <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold text-[#252A27] truncate">Arjun Kulkarni</div>
-            <div className="text-[11px] text-[#727A75] truncate">GIS Analyst</div>
+            <div className="text-xs font-semibold text-[#252A27] truncate">
+              {authUser?.displayName || 'Arjun Kulkarni'}
+            </div>
+            <div className="text-[11px] text-[#727A75] truncate">
+              {authUser ? 'GIS Analyst · Cloud Sync' : 'GIS Analyst · Local Mode'}
+            </div>
           </div>
           <button
             type="button"

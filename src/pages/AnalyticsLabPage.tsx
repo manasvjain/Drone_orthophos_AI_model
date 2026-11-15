@@ -13,6 +13,7 @@ import {
 } from '../types/gis';
 import { MetricBlock } from '../components/ui/MetricBlock';
 import { EmptyState } from '../components/ui/StateBlocks';
+import { KaggleTrainingStudio } from '../components/training/KaggleTrainingStudio';
 
 type ExportDataset =
   | 'complete'
@@ -323,6 +324,7 @@ export function AnalyticsLabPage() {
     { id: 'village', label: 'Village Analytics' },
     { id: 'comparison', label: 'Model Comparison' },
     { id: 'explainable', label: 'Explainable AI' },
+    { id: 'training', label: 'Dataset & Training' },
     { id: 'exports', label: 'Reports & Exports' },
   ];
 
@@ -934,7 +936,10 @@ export function AnalyticsLabPage() {
         </div>
       )}
 
-      {/* TAB 4: REPORTS & EXPORTS */}
+      {/* TAB 4: KAGGLE DATASET & TRAINING */}
+      {analyticsTab === 'training' && <KaggleTrainingStudio />}
+
+      {/* TAB 5: REPORTS & EXPORTS */}
       {analyticsTab === 'exports' && (
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
           {/* Left: Export Selection */}

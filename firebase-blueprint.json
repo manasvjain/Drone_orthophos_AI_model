@@ -1,0 +1,361 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated GIS analyst profile without PII",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "role": {
+          "type": "string",
+          "enum": ["GIS Analyst", "Survey Supervisor"],
+          "maxLength": 32
+        },
+        "initializedDemo": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "role", "initializedDemo", "createdAt", "updatedAt"]
+    },
+    "UserPrivateInfo": {
+      "title": "UserPrivateInfo",
+      "description": "Isolated PII record for authenticated user",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "updatedAt"]
+    },
+    "UserPreferences": {
+      "title": "UserPreferences",
+      "description": "Persisted GIS coordinate system, tiling, and export defaults",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "defaultCrs": {
+          "type": "string",
+          "enum": ["EPSG:32643", "EPSG:32644", "EPSG:4326"],
+          "maxLength": 16
+        },
+        "defaultTileSize": {
+          "type": "number"
+        },
+        "defaultConfidenceThreshold": {
+          "type": "number"
+        },
+        "autoVectorizePostInference": {
+          "type": "boolean"
+        },
+        "snapParcelToleranceM": {
+          "type": "number"
+        },
+        "exportIncludeMetadata": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "defaultCrs",
+        "defaultTileSize",
+        "defaultConfidenceThreshold",
+        "autoVectorizePostInference",
+        "snapParcelToleranceM",
+        "exportIncludeMetadata",
+        "updatedAt"
+      ]
+    },
+    "VillageProjectDoc": {
+      "title": "VillageProjectDoc",
+      "description": "SVAMITVA village survey project, orthophoto metadata, and pipeline status",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "village": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "district": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "latitude": {
+          "type": "number"
+        },
+        "longitude": {
+          "type": "number"
+        },
+        "surveyDate": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["Completed", "Processing", "Pending", "Failed", "Draft"],
+          "maxLength": 24
+        },
+        "progress": {
+          "type": "number"
+        },
+        "modelUsed": {
+          "type": "string",
+          "enum": ["U-Net", "DeepLabV3+", "SegFormer"],
+          "maxLength": 32
+        },
+        "modelVersion": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "tileSize": {
+          "type": "number"
+        },
+        "enabledClasses": {
+          "type": "array"
+        },
+        "orthophoto": {
+          "type": "object"
+        },
+        "segmentationSummary": {
+          "type": "object"
+        },
+        "lastProcessedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "wards": {
+          "type": "array"
+        },
+        "errorMessage": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "stages": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "ownerId",
+        "village",
+        "district",
+        "state",
+        "latitude",
+        "longitude",
+        "surveyDate",
+        "description",
+        "status",
+        "progress",
+        "modelUsed",
+        "modelVersion",
+        "tileSize",
+        "enabledClasses",
+        "lastProcessedAt",
+        "wards",
+        "stages",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "GisFeatureDoc": {
+      "title": "GisFeatureDoc",
+      "description": "Extracted GIS vector feature belonging to a village project",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "projectId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "featureClass": {
+          "type": "string",
+          "enum": ["building", "road", "water", "vegetation", "parcel"],
+          "maxLength": 24
+        },
+        "ward": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "confidence": {
+          "type": "number"
+        },
+        "modelVersion": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "processingDate": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "points": {
+          "type": "array"
+        },
+        "areaSqm": {
+          "type": "number"
+        },
+        "perimeterM": {
+          "type": "number"
+        },
+        "roofType": {
+          "type": "string",
+          "enum": ["RCC", "Tiled", "Tin", "Other", "Unknown"],
+          "maxLength": 24
+        },
+        "roofConfidence": {
+          "type": "number"
+        },
+        "roofClassifier": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "centroidLat": {
+          "type": "number"
+        },
+        "centroidLng": {
+          "type": "number"
+        },
+        "lengthM": {
+          "type": "number"
+        },
+        "surfaceClass": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "widthM": {
+          "type": "number"
+        },
+        "waterType": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "coveragePct": {
+          "type": "number"
+        },
+        "canopyType": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "parcelNo": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "projectId",
+        "ownerId",
+        "featureClass",
+        "ward",
+        "confidence",
+        "modelVersion",
+        "processingDate",
+        "points",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Public analyst profile document without PII"
+    },
+    "/users/{userId}/private/info": {
+      "schema": { "$ref": "#/entities/UserPrivateInfo" },
+      "description": "Isolated user PII (email)"
+    },
+    "/users/{userId}/preferences/default": {
+      "schema": { "$ref": "#/entities/UserPreferences" },
+      "description": "Analyst GIS default settings"
+    },
+    "/projects/{projectId}": {
+      "schema": { "$ref": "#/entities/VillageProjectDoc" },
+      "description": "SVAMITVA village project documents owned by an authenticated user"
+    },
+    "/projects/{projectId}/features/{featureId}": {
+      "schema": { "$ref": "#/entities/GisFeatureDoc" },
+      "description": "Extracted GIS vector features for a village project"
+    }
+  }
+}

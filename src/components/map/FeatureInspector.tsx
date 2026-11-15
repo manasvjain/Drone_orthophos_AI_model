@@ -103,6 +103,7 @@ export function FeatureInspector({
         ['Perimeter', `${b.perimeterM.toFixed(1)} m`, true],
         ['Roof Type', b.roofType, false],
         ['Roof Confidence', `${(b.roofConfidence * 100).toFixed(1)}%`, true],
+        ['Roof Classifier', b.roofClassifier ?? 'CNN-2D (TensorFlow.js RoofNet)', false],
         ['Segmentation Conf.', `${(b.confidence * 100).toFixed(1)}%`, true],
         ['Centroid Coords', `${b.centroid[0].toFixed(5)}° N, ${b.centroid[1].toFixed(5)}° E`, true],
         ['Revenue Ward', b.ward, false],

@@ -9,6 +9,11 @@ import {
   VillageProject,
   WaterFeature,
 } from '../types/gis';
+import { classifyRoofsWithCnn, RoofBboxPatchInput } from './roofCnnClassifier';
+import {
+  getActiveCalibrationProfile,
+  SegmentationCalibrationProfile,
+} from './segmentationCalibration';
 
 // Class IDs aligned with app_3c61c556.py:
 // 0: Background, 1: Building, 2: Vegetation, 3: Water, 4: Road
@@ -25,7 +30,7 @@ export interface SegmentationRunResult {
   features: GisFeature[];
 }
 
-interface ImageAdaptiveStats {
+export interface ImageAdaptiveStats {
   medianLum: number;
   p15Lum: number;
   p85Lum: number;
@@ -43,7 +48,7 @@ function loadImageElement(src: string): Promise<HTMLImageElement> {
 }
 
 // Fast O(N) 5x5 local standard deviation & Sobel edge magnitude using integral images
-function computeTextureAndEdgeMaps(pixels: Uint8ClampedArray, w: number, h: number) {
+export function computeTextureAndEdgeMaps(pixels: Uint8ClampedArray, w: number, h: number) {
   const n = w * h;
   const lum = new Float32Array(n);
   const edge = new Float32Array(n);
@@ -130,7 +135,7 @@ function computeTextureAndEdgeMaps(pixels: Uint8ClampedArray, w: number, h: numb
 }
 
 // Per-image percentile calibration so unseen flights with different exposure generalize reliably
-function computeAdaptiveStats(
+export function computeAdaptiveStats(
   pixels: Uint8ClampedArray,
   lum: Float32Array,
   localStd: Float32Array,
@@ -182,7 +187,7 @@ function computeAdaptiveStats(
   };
 }
 
-function classifyPixelAdaptive(
+export function classifyPixelWithProfile(
   r: number,
   g: number,
   b: number,
@@ -190,7 +195,8 @@ function classifyPixelAdaptive(
   stdVal: number,
   edgeVal: number,
   stats: ImageAdaptiveStats,
-  enabled: Set<string>
+  enabled: Set<string>,
+  calParams: SegmentationCalibrationProfile['params']
 ): number {
   const maxC = Math.max(r, g, b);
   const minC = Math.min(r, g, b);
@@ -198,7 +204,7 @@ function classifyPixelAdaptive(
   const sat = maxC > 0 ? delta / maxC : 0;
 
   // Cast shadows between buildings act as separation boundaries (never merge into roofs!)
-  if (lumVal < Math.min(58, stats.p15Lum * 0.85) && sat < 0.28) {
+  if (lumVal < Math.min(58, stats.p15Lum * calParams.shadowLumRatio) && sat < 0.28) {
     return CLS_BG;
   }
 
@@ -207,35 +213,30 @@ function classifyPixelAdaptive(
   const rbDiff = r - b;
   const ngrdi = (g - r) / (g + r + 1);
 
-  // 1. WATER BODIES:
-  // (a) Smooth dark/teal/blue water (rivers, canals, ponds)
-  // (b) Smooth algae/duckweed-covered village ponds (high G, moderate R, very low texture)
   if (enabled.has('Water')) {
     const isCoolWater =
       b >= r - 3 &&
       b >= g - 10 &&
       lumVal >= 20 &&
       lumVal <= 170 &&
-      stdVal < 10.5 &&
-      edgeVal < 11.5;
+      stdVal < calParams.waterMaxStd &&
+      edgeVal < calParams.waterMaxEdge;
     const isAlgaePond =
-      exg > 20 &&
+      exg > calParams.algaeExgThresh &&
       ngrdi > 0.04 &&
       g > 110 &&
       r > 85 &&
       b < g - 20 &&
-      stdVal < 8.4 &&
-      edgeVal < 9.5;
+      stdVal < Math.max(6.0, calParams.waterMaxStd - 2.1) &&
+      edgeVal < Math.max(7.0, calParams.waterMaxEdge - 2.0);
     if (isCoolWater || isAlgaePond) {
       return CLS_WATER;
     }
   }
 
-  // 2. VEGETATION:
-  // Textured green trees, shrubs, and agricultural plots
   if (enabled.has('Vegetation')) {
     const isGreenCanopy =
-      exg > 13 && g > r * 1.015 && g > b * 1.07 && lumVal >= 22 && lumVal <= 212;
+      exg > calParams.vegExgThresh && g > r * 1.015 && g > b * 1.07 && lumVal >= 22 && lumVal <= 212;
     const isDeepFoliage =
       ngrdi > 0.055 && g > b + 10 && lumVal < 140 && stdVal >= 6.0;
     if (isGreenCanopy || isDeepFoliage) {
@@ -243,24 +244,23 @@ function classifyPixelAdaptive(
     }
   }
 
-  // 3. BUILDINGS (Adaptive luminance thresholds + roof chromaticity + edge support):
   if (enabled.has('Buildings')) {
-    const rccBrightThresh = Math.max(152, Math.min(182, stats.medianLum + 32));
-    const rccMidThresh = Math.max(122, stats.medianLum + 6);
+    const rccBrightThresh = Math.max(145, Math.min(188, stats.medianLum + calParams.rccBrightDelta));
+    const rccMidThresh = Math.max(115, stats.medianLum + calParams.rccMidDelta);
 
     const isTerracottaTile =
-      rbDiff > 26 &&
-      rgDiff > 10 &&
+      rbDiff > calParams.terracottaRbDiff &&
+      rgDiff > calParams.terracottaRgDiff &&
       r > g * 1.11 &&
       r > 80 &&
       g > 38 &&
       (edgeVal > 7.5 || stdVal > 7.5);
 
-    const isBrightRcc = lumVal > rccBrightThresh && sat < 0.22;
+    const isBrightRcc = lumVal > rccBrightThresh && sat < calParams.rccMaxSat;
     const isWeatheredRcc =
       lumVal >= rccMidThresh &&
       lumVal <= rccBrightThresh &&
-      sat < 0.16 &&
+      sat < Math.max(0.1, calParams.rccMaxSat - 0.06) &&
       edgeVal > 7.5;
     const isBlueMetalRoof = b > r + 24 && b > 95 && sat > 0.24;
     const isPaintedMetalRoof = sat > 0.34 && r > 130 && g < 90 && b < 90 && edgeVal > 6.5;
@@ -279,9 +279,8 @@ function classifyPixelAdaptive(
     }
   }
 
-  // 4. ROADS (Adaptive smooth corridor candidates — filtered later by elongation & width):
   if (enabled.has('Roads')) {
-    const roadMaxStd = Math.max(11.5, stats.medianNonVegStd * 1.05);
+    const roadMaxStd = Math.max(calParams.roadMaxStd, stats.medianNonVegStd * 1.05);
     const roadLow = Math.max(62, stats.p15Lum * 0.95);
     const roadHigh = Math.min(176, stats.p85Lum * 0.96);
 
@@ -294,7 +293,7 @@ function classifyPixelAdaptive(
       g >= b - 6 &&
       rbDiff < 44 &&
       stdVal < roadMaxStd &&
-      edgeVal < 14.5;
+      edgeVal < calParams.roadMaxEdge;
 
     const isAsphalt =
       lumVal >= Math.max(55, roadLow - 8) &&
@@ -825,13 +824,15 @@ export async function runTiledDroneSegmentation(
   const pixels = imgData.data;
 
   // Precompute texture, edge density, and per-image adaptive exposure calibration
+  const calProfile = getActiveCalibrationProfile();
+  const calParams = calProfile.params;
   const { lum, localStd, edgeDensity } = computeTextureAndEdgeMaps(pixels, w, h);
   const stats = computeAdaptiveStats(pixels, lum, localStd, w * h);
 
   // Mark shadow barriers to prevent adjacent houses from merging across narrow eaves shadows
   const shadowBarrier = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
-    if (lum[i] < Math.min(58, stats.p15Lum * 0.85)) shadowBarrier[i] = 1;
+    if (lum[i] < Math.min(58, stats.p15Lum * calParams.shadowLumRatio)) shadowBarrier[i] = 1;
   }
 
   // Tiled 256x256 (or configured tileSize) inference pass mirroring app_3c61c556.py
@@ -847,7 +848,7 @@ export async function runTiledDroneSegmentation(
         for (let x = tx; x < xEnd; x++) {
           const i = y * w + x;
           const p = i * 4;
-          rawClasses[i] = classifyPixelAdaptive(
+          rawClasses[i] = classifyPixelWithProfile(
             pixels[p],
             pixels[p + 1],
             pixels[p + 2],
@@ -855,7 +856,8 @@ export async function runTiledDroneSegmentation(
             localStd[i],
             edgeDensity[i],
             stats,
-            enabled
+            enabled,
+            calParams
           );
         }
       }
@@ -1142,10 +1144,26 @@ export async function runTiledDroneSegmentation(
     Number((((gy + 0.5) / gh) * natH).toFixed(1)),
   ];
 
-  // 1. Buildings
+  // 1. Buildings + TensorFlow.js 2D-CNN Roof Classification
   if (enabled.has('Buildings')) {
     const bldComps = extractConnectedComponents(grid, gw, gh, CLS_BUILDING, 22, 4).slice(0, 28);
+    interface PendingBuilding {
+      comp: (typeof bldComps)[number];
+      polygon: [number, number][];
+      areaSqm: number;
+      perimeterM: number;
+      origPxIndices: number[];
+      segConf: number;
+      centroid: [number, number];
+      ward: string;
+      cropUrl?: string;
+      id: string;
+    }
+
+    const pendingBuildings: PendingBuilding[] = [];
+    const cnnBoxes: RoofBboxPatchInput[] = [];
     let bIdx = 0;
+
     for (const comp of bldComps) {
       const spanX = comp.maxX - comp.minX + 1;
       const spanY = comp.maxY - comp.minY + 1;
@@ -1175,7 +1193,6 @@ export async function runTiledDroneSegmentation(
 
       bIdx++;
       const origPxIndices = comp.cells.flatMap((c) => gridPixelRefs[c]);
-      const { roofType, confidence: roofConf } = detectRoofTypeFromPixels(pixels, origPxIndices);
 
       let edgeSum = 0;
       for (const pxIdx of origPxIndices) edgeSum += edgeDensity[pxIdx];
@@ -1192,24 +1209,58 @@ export async function runTiledDroneSegmentation(
         project.wards[(bIdx - 1) % Math.max(1, project.wards.length)] || 'Ward 01 - Central Abadi';
       const cropUrl = cropPatchDataUrl(srcCanvas, comp.minX, comp.minY, comp.maxX, comp.maxY, gw, gh);
 
-      const bld: BuildingFeature = {
-        id: `BLD-${shortCode}-${String(bIdx).padStart(3, '0')}`,
-        projectId: project.id,
-        featureClass: 'building',
-        ward,
-        confidence: segConf,
-        modelVersion: modelVer,
-        processingDate: dateStr,
+      pendingBuildings.push({
+        comp,
         polygon,
         areaSqm,
         perimeterM,
-        roofType,
-        roofConfidence: roofConf,
+        origPxIndices,
+        segConf,
         centroid: [lat, lng],
-        roofPreviewUrl: cropUrl,
+        ward,
+        cropUrl,
+        id: `BLD-${shortCode}-${String(bIdx).padStart(3, '0')}`,
+      });
+      cnnBoxes.push({
+        minX: comp.minX,
+        minY: comp.minY,
+        maxX: comp.maxX,
+        maxY: comp.maxY,
+        gw,
+        gh,
+      });
+    }
+
+    let cnnPreds: { roofType: RoofType; confidence: number; classifier: string }[] = [];
+    try {
+      cnnPreds = await classifyRoofsWithCnn(srcCanvas, cnnBoxes);
+    } catch (err) {
+      console.warn('TensorFlow.js RoofNet fallback to pixel classifier:', err);
+      cnnPreds = [];
+    }
+
+    pendingBuildings.forEach((pb, i) => {
+      const pred = cnnPreds[i];
+      const fallback = !pred ? detectRoofTypeFromPixels(pixels, pb.origPxIndices) : null;
+      const bld: BuildingFeature = {
+        id: pb.id,
+        projectId: project.id,
+        featureClass: 'building',
+        ward: pb.ward,
+        confidence: pb.segConf,
+        modelVersion: modelVer,
+        processingDate: dateStr,
+        polygon: pb.polygon,
+        areaSqm: pb.areaSqm,
+        perimeterM: pb.perimeterM,
+        roofType: pred ? pred.roofType : fallback!.roofType,
+        roofConfidence: pred ? pred.confidence : fallback!.confidence,
+        roofClassifier: pred ? pred.classifier : 'Spectral Heuristic Fallback',
+        centroid: pb.centroid,
+        roofPreviewUrl: pb.cropUrl,
       };
       features.push(bld);
-    }
+    });
   }
 
   // 2. Water Bodies

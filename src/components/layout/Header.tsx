@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bell, ChevronRight, Menu, Search } from 'lucide-react';
+import { Bell, ChevronRight, Cloud, CloudOff, Menu, Search } from 'lucide-react';
 import { ANALYST_AVATAR } from '../../data/mockGisData';
 import { useGis } from '../../context/GisContext';
 import { PageId } from '../../types/gis';
@@ -33,6 +33,9 @@ export function Header({ onOpenMobileSidebar }: HeaderProps) {
     setGlobalSearch,
     notifications,
     markAllNotificationsRead,
+    authUser,
+    dbSyncStatus,
+    signInWithGoogle,
   } = useGis();
 
   const [notifOpen, setNotifOpen] = useState(false);
@@ -79,6 +82,9 @@ export function Header({ onOpenMobileSidebar }: HeaderProps) {
         .slice(0, 5)
     : [];
 
+  const analystName = authUser?.displayName || 'A. Kulkarni';
+  const analystAvatar = authUser?.photoURL || ANALYST_AVATAR;
+
   return (
     <header className="h-14 bg-white border-b border-[#E4E6DF] px-4 lg:px-5 flex items-center justify-between gap-4 shrink-0">
       {/* Left: Mobile menu + Breadcrumbs */}
@@ -101,7 +107,7 @@ export function Header({ onOpenMobileSidebar }: HeaderProps) {
         </nav>
       </div>
 
-      {/* Right: Project Selector, Search, Notifications, Profile */}
+      {/* Right: Project Selector, Search, Cloud Sync, Notifications, Profile */}
       <div className="flex items-center gap-2.5 shrink-0">
         {/* Current Project Selector */}
         <div className="hidden sm:flex items-center gap-1.5">
@@ -215,6 +221,35 @@ export function Header({ onOpenMobileSidebar }: HeaderProps) {
           )}
         </div>
 
+        {/* Cloud Firestore Auth / Sync */}
+        {authUser ? (
+          <button
+            type="button"
+            onClick={() => setActivePage('settings')}
+            className="hidden lg:inline-flex h-8 px-2.5 items-center gap-1.5 rounded-[4px] border border-[#E4E6DF] bg-[#FAFBF8] hover:bg-[#F7F7F2] text-[11px] font-medium text-[#3C5C47] shrink-0 whitespace-nowrap"
+            title={`Signed in as ${authUser.email ?? 'Google User'}`}
+          >
+            <Cloud size={13} strokeWidth={1.75} className="text-[#496B54]" />
+            <span>
+              {dbSyncStatus === 'syncing'
+                ? 'Syncing'
+                : dbSyncStatus === 'error'
+                  ? 'Sync Alert'
+                  : 'Firestore Synced'}
+            </span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void signInWithGoogle()}
+            className="h-8 px-2.5 inline-flex items-center gap-1.5 rounded-[4px] bg-[#496B54] hover:bg-[#3D5B47] text-white text-[11px] font-medium transition-colors shrink-0 whitespace-nowrap"
+            title="Sign in with Google to save projects and extracted features to Cloud Firestore"
+          >
+            <CloudOff size={13} strokeWidth={1.75} />
+            <span>Sign in to Sync</span>
+          </button>
+        )}
+
         {/* Notifications */}
         <div ref={notifRef} className="relative">
           <button
@@ -270,16 +305,16 @@ export function Header({ onOpenMobileSidebar }: HeaderProps) {
           type="button"
           onClick={() => setActivePage('settings')}
           className="h-8 pl-1.5 pr-2.5 flex items-center gap-2 rounded-[4px] border border-[#E4E6DF] bg-white hover:bg-[#F7F7F2] transition-colors shrink-0"
-          title="Analyst settings"
+          title="Analyst & Firestore account settings"
         >
           <img
-            src={ANALYST_AVATAR}
-            alt="Arjun Kulkarni"
+            src={analystAvatar}
+            alt={analystName}
             referrerPolicy="no-referrer"
             className="w-5 h-5 rounded-[2px] object-cover bg-[#E4E6DF]"
           />
-          <span className="hidden xl:inline text-xs font-medium text-[#252A27] whitespace-nowrap">
-            A. Kulkarni
+          <span className="hidden xl:inline text-xs font-medium text-[#252A27] whitespace-nowrap max-w-[120px] truncate">
+            {analystName}
           </span>
         </button>
       </div>

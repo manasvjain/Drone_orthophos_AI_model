@@ -6,14 +6,19 @@ import {
   SystemSettings,
   VillageProject,
 } from '../types/gis';
+import analystAvatarImg from '../assets/images/analyst_avatar_1794728866493.jpg';
+import roofRccSampleImg from '../assets/images/roof_sample_rcc_1794728865787.jpg';
+import roofTiledSampleImg from '../assets/images/roof_sample_tiled_1794728865694.jpg';
+import villageOrthoAltImg from '../assets/images/village_orthophoto_alt_1794728865779.jpg';
+import villageOrthoMainImg from '../assets/images/village_orthophoto_main_1794728864971.jpg';
 
-export const ANALYST_AVATAR = '/src/assets/images/analyst_avatar_1794728866493.jpg';
+export const ANALYST_AVATAR = analystAvatarImg;
 export const DRONE_IMG_1 = '/assets/aistudio/img1_ec33c0f1.jpeg';
 export const DRONE_IMG_2 = '/assets/aistudio/img2_be6ffe69.jpeg';
 export const ORTHO_MAIN = DRONE_IMG_2;
 export const ORTHO_ALT = DRONE_IMG_1;
-export const ROOF_RCC_IMG = '/src/assets/images/roof_sample_rcc_1794728865787.jpg';
-export const ROOF_TILED_IMG = '/src/assets/images/roof_sample_tiled_1794728865694.jpg';
+export const ROOF_RCC_IMG = roofRccSampleImg;
+export const ROOF_TILED_IMG = roofTiledSampleImg;
 
 export const PIPELINE_STEP_NAMES = [
   'Upload Validation',
@@ -164,7 +169,7 @@ export const INITIAL_PROJECTS: VillageProject[] = [
       },
       resolutionCm: 4.5,
       bands: 3,
-      imageUrl: '/src/assets/images/village_orthophoto_main_1794728864971.jpg',
+      imageUrl: villageOrthoMainImg,
     },
     stages: buildStages(5),
   },
@@ -202,7 +207,7 @@ export const INITIAL_PROJECTS: VillageProject[] = [
       },
       resolutionCm: 5.5,
       bands: 3,
-      imageUrl: '/src/assets/images/village_orthophoto_alt_1794728865779.jpg',
+      imageUrl: villageOrthoAltImg,
     },
     stages: buildStages(4, 5),
   },

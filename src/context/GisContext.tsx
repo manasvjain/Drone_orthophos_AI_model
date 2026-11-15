@@ -1,12 +1,16 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   AnalyticsTabId,
   AppNotification,
+  BuildingFeature,
   GisFeature,
   LayerVisibility,
   OrthophotoMetadata,
   PageId,
   SegmentationModelId,
+  SegmentationOutputs,
   SystemSettings,
   VillageProject,
 } from '../types/gis';
@@ -18,6 +22,29 @@ import {
   INITIAL_SETTINGS,
 } from '../data/mockGisData';
 import { runTiledDroneSegmentation } from '../utils/droneSegmentationEngine';
+import {
+  auth,
+  db,
+  handleFirestoreError,
+  OperationType,
+  signInWithGooglePopup,
+  signOutFirebase,
+  testFirestoreConnection,
+} from '../lib/firebase';
+import {
+  clearAllUserProjectsInFirestore,
+  createProjectInFirestore,
+  deleteProjectAndFeaturesFromFirestore,
+  deserializeFeatureDoc,
+  deserializeProjectDoc,
+  ensureUserAccountRecords,
+  markDemoInitialized,
+  persistProcessedProjectAndFeatures,
+  sanitizeOrthophotoMeta,
+  saveUserPreferences,
+  seedProjectsAndFeaturesToFirestore,
+  updateProjectFieldsInFirestore,
+} from '../lib/firestoreSync';
 
 interface CreateProjectInput {
   village: string;
@@ -28,6 +55,8 @@ interface CreateProjectInput {
   surveyDate: string;
   description: string;
 }
+
+export type DbSyncStatus = 'local' | 'syncing' | 'synced' | 'error';
 
 interface GisContextValue {
   activePage: PageId;
@@ -72,9 +101,33 @@ interface GisContextValue {
     modelFilePresent: boolean;
     activeEngine: string;
   };
+  authUser: User | null;
+  authReady: boolean;
+  firestoreConnected: boolean;
+  dbSyncStatus: DbSyncStatus;
+  firebaseError: string | null;
+  clearFirebaseError: () => void;
+  signInWithGoogle: () => Promise<void>;
+  signOutAccount: () => Promise<void>;
 }
 
 const GisContext = createContext<GisContextValue | undefined>(undefined);
+
+function formatFirebaseErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  try {
+    const parsed = JSON.parse(raw) as { error?: string; operationType?: string; path?: string };
+    if (parsed?.error) {
+      if (parsed.error.toLowerCase().includes('permission')) {
+        return `Cloud Firestore permission check blocked ${parsed.operationType ?? 'operation'} on ${parsed.path ?? 'document'}. Verify Google sign-in & rules.`;
+      }
+      return parsed.error;
+    }
+  } catch {
+    // Plain error message
+  }
+  return raw;
+}
 
 export function GisProvider({ children }: { children: React.ReactNode }) {
   const [activePage, setActivePage] = useState<PageId>('dashboard');
@@ -104,47 +157,132 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
     activeEngine: 'tiled-cv-segmentation',
   });
 
-  // Store actual uploaded File objects by projectId so POST /api/analyze can send the real file
+  // Firebase Auth + Cloud Firestore state
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState<boolean>(false);
+  const [firestoreConnected, setFirestoreConnected] = useState<boolean>(false);
+  const [dbSyncStatus, setDbSyncStatus] = useState<DbSyncStatus>('local');
+  const [firebaseError, setFirebaseError] = useState<string | null>(null);
+
+  // Refs for session-local files, high-res masks, roof crops, and snapshot subscriptions
   const uploadedFilesRef = useRef<Map<string, File>>(new Map());
+  const localOrthoUrlsRef = useRef<Map<string, string>>(new Map());
+  const localMasksRef = useRef<Map<string, SegmentationOutputs>>(new Map());
+  const localRoofCropsRef = useRef<Map<string, string>>(new Map());
+  const hydratedStaticRef = useRef<Set<string>>(new Set());
   const activeProjectIdRef = useRef<string>(activeProjectId);
   activeProjectIdRef.current = activeProjectId;
+  const authUserRef = useRef<User | null>(authUser);
+  authUserRef.current = authUser;
   const initializedRef = useRef(false);
 
-  const runBootstrapSegmentation = async () => {
-    const bootstrapIds = ['PRJ-HR-2026-014', 'PRJ-UP-2026-021'];
-    for (const pid of bootstrapIds) {
-      const prj = INITIAL_PROJECTS.find((p) => p.id === pid);
-      if (!prj?.orthophoto?.imageUrl) continue;
-      try {
-        const result = await runTiledDroneSegmentation(prj.orthophoto.imageUrl, prj);
-        setProjects((prev) =>
-          prev.map((p) =>
-            p.id === pid
-              ? {
-                  ...p,
-                  orthophoto: p.orthophoto
-                    ? { ...p.orthophoto, widthPx: result.width, heightPx: result.height }
-                    : null,
-                  segmentationOutputs: result.outputs,
-                }
-              : p
-          )
-        );
-        setFeatures((prev) => [
-          ...prev.filter((f) => f.projectId !== pid),
-          ...result.features,
-        ]);
-        if (activeProjectIdRef.current === pid) {
-          const firstBld = result.features.find((f) => f.featureClass === 'building');
-          if (firstBld) setSelectedFeatureId(firstBld.id);
+  const captureLocalArtifacts = (
+    projectId: string,
+    outputs: SegmentationOutputs,
+    extracted: GisFeature[]
+  ) => {
+    localMasksRef.current.set(projectId, outputs);
+    for (const f of extracted) {
+      if (f.featureClass === 'building') {
+        const b = f as BuildingFeature;
+        if (b.roofPreviewUrl) {
+          localRoofCropsRef.current.set(`${projectId}::${b.id}`, b.roofPreviewUrl);
         }
-      } catch (err) {
-        console.warn(`Initial segmentation skipped for ${pid}:`, err);
       }
     }
   };
 
-  // Check Express /api/health & run initial real segmentation on the two uploaded UAV orthophotos
+  const computeBootstrapData = async (): Promise<{
+    projects: VillageProject[];
+    features: GisFeature[];
+  }> => {
+    const nextProjects = INITIAL_PROJECTS.map((p) => ({ ...p }));
+    const nextFeatures: GisFeature[] = [];
+    const bootstrapIds = ['PRJ-HR-2026-014', 'PRJ-UP-2026-021'];
+
+    for (const pid of bootstrapIds) {
+      const idx = nextProjects.findIndex((p) => p.id === pid);
+      const prj = nextProjects[idx];
+      if (!prj?.orthophoto?.imageUrl) continue;
+      try {
+        const result = await runTiledDroneSegmentation(prj.orthophoto.imageUrl, prj);
+        hydratedStaticRef.current.add(pid);
+        captureLocalArtifacts(pid, result.outputs, result.features);
+        nextProjects[idx] = {
+          ...prj,
+          orthophoto: { ...prj.orthophoto, widthPx: result.width, heightPx: result.height },
+          segmentationOutputs: result.outputs,
+        };
+        nextFeatures.push(...result.features);
+      } catch (err) {
+        console.warn(`Initial segmentation skipped for ${pid}:`, err);
+      }
+    }
+    return { projects: nextProjects, features: nextFeatures };
+  };
+
+  const runLocalBootstrapSegmentation = async () => {
+    const { projects: seededProjects, features: seededFeatures } = await computeBootstrapData();
+    if (authUserRef.current) return;
+    setProjects(seededProjects);
+    setFeatures(seededFeatures);
+    const activeBld = seededFeatures.find(
+      (f) => f.projectId === activeProjectIdRef.current && f.featureClass === 'building'
+    );
+    if (activeBld) setSelectedFeatureId(activeBld.id);
+  };
+
+  // Lazy in-memory mask/crop hydration for Completed static-asset projects loaded from Firestore after reload
+  const hydrateStaticMasksIfNeeded = async (prj: VillageProject) => {
+    if (
+      prj.status !== 'Completed' ||
+      !prj.orthophoto?.imageUrl ||
+      prj.orthophoto.imageUrl.startsWith('data:') ||
+      prj.orthophoto.imageUrl.startsWith('blob:') ||
+      localMasksRef.current.has(prj.id) ||
+      hydratedStaticRef.current.has(prj.id)
+    ) {
+      return;
+    }
+    hydratedStaticRef.current.add(prj.id);
+    try {
+      const res = await runTiledDroneSegmentation(prj.orthophoto.imageUrl, prj, {
+        tileSize: prj.tileSize,
+        enabledClasses: prj.enabledClasses,
+      });
+      captureLocalArtifacts(prj.id, res.outputs, res.features);
+
+      setProjects((prev) =>
+        prev.map((p) =>
+          p.id === prj.id
+            ? {
+                ...p,
+                segmentationOutputs: p.segmentationOutputs
+                  ? {
+                      ...p.segmentationOutputs,
+                      overlayUrl: res.outputs.overlayUrl,
+                      buildingsMaskUrl: res.outputs.buildingsMaskUrl,
+                      roadsMaskUrl: res.outputs.roadsMaskUrl,
+                    }
+                  : res.outputs,
+              }
+            : p
+        )
+      );
+
+      setFeatures((prev) =>
+        prev.map((f) => {
+          if (f.projectId !== prj.id || f.featureClass !== 'building') return f;
+          const crop = localRoofCropsRef.current.get(`${prj.id}::${f.id}`);
+          return crop ? { ...f, roofPreviewUrl: crop } : f;
+        })
+      );
+    } catch (err) {
+      console.warn(`Mask hydration skipped for ${prj.id}:`, err);
+    }
+  };
+
+  // Check Express /api/health, test Firestore server connectivity, and run initial local segmentation
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
@@ -165,8 +303,202 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
         setBackendHealth((prev) => ({ ...prev, checked: true }));
       });
 
-    void runBootstrapSegmentation();
+    void testFirestoreConnection().then((ok) => setFirestoreConnected(ok));
+    void runLocalBootstrapSegmentation();
   }, []);
+
+  // Firebase Auth & Real-Time Firestore Listeners
+  useEffect(() => {
+    let cancelled = false;
+    let projectsUnsub: (() => void) | null = null;
+    const featureUnsubs = new Map<string, () => void>();
+    const featuresByProject = new Map<string, GisFeature[]>();
+
+    const cleanupListeners = () => {
+      if (projectsUnsub) {
+        projectsUnsub();
+        projectsUnsub = null;
+      }
+      featureUnsubs.forEach((unsub) => unsub());
+      featureUnsubs.clear();
+      featuresByProject.clear();
+    };
+
+    const emitMergedFeatures = () => {
+      const merged: GisFeature[] = [];
+      featuresByProject.forEach((list) => {
+        for (const f of list) {
+          if (f.featureClass === 'building') {
+            const crop = localRoofCropsRef.current.get(`${f.projectId}::${f.id}`);
+            merged.push(crop ? { ...f, roofPreviewUrl: crop } : f);
+          } else {
+            merged.push(f);
+          }
+        }
+      });
+      setFeatures(merged);
+    };
+
+    const unsubAuth = onAuthStateChanged(auth, async (user) => {
+      cleanupListeners();
+      setAuthUser(user);
+      setAuthReady(true);
+
+      if (!user) {
+        setDbSyncStatus('local');
+        setFirebaseError(null);
+        return;
+      }
+
+      setDbSyncStatus('syncing');
+      setFirebaseError(null);
+
+      try {
+        const account = await ensureUserAccountRecords(user, INITIAL_SETTINGS);
+        if (cancelled) return;
+        setSettings(account.settings);
+
+        if (!account.initializedDemo) {
+          const seeded = await computeBootstrapData();
+          if (cancelled) return;
+          await seedProjectsAndFeaturesToFirestore(user.uid, seeded.projects, seeded.features);
+        }
+
+        if (cancelled) return;
+
+        const projectsQuery = query(
+          collection(db, 'projects'),
+          where('ownerId', '==', user.uid)
+        );
+
+        projectsUnsub = onSnapshot(
+          projectsQuery,
+          (snapshot) => {
+            if (cancelled) return;
+            const docs = snapshot.docs.map((d) => {
+              const raw = deserializeProjectDoc(d.data() as Record<string, unknown>);
+              const localUrl = localOrthoUrlsRef.current.get(raw.id);
+              const localMask = localMasksRef.current.get(raw.id);
+
+              const hydratedOrtho =
+                raw.orthophoto && !raw.orthophoto.imageUrl && localUrl
+                  ? { ...raw.orthophoto, imageUrl: localUrl }
+                  : raw.orthophoto;
+
+              const hydratedSeg =
+                raw.segmentationOutputs && localMask
+                  ? {
+                      ...raw.segmentationOutputs,
+                      overlayUrl: localMask.overlayUrl,
+                      buildingsMaskUrl: localMask.buildingsMaskUrl,
+                      roadsMaskUrl: localMask.roadsMaskUrl,
+                    }
+                  : raw.segmentationOutputs;
+
+              const mergedPrj: VillageProject = {
+                ...raw,
+                orthophoto: hydratedOrtho,
+                segmentationOutputs: hydratedSeg,
+              };
+
+              if (mergedPrj.status === 'Completed' && (!hydratedSeg || !hydratedSeg.overlayUrl)) {
+                void hydrateStaticMasksIfNeeded(mergedPrj);
+              }
+              return mergedPrj;
+            });
+
+            docs.sort((a, b) => (a.id > b.id ? 1 : -1));
+            setProjects(docs);
+            setDbSyncStatus('synced');
+
+            if (docs.length > 0 && !docs.some((p) => p.id === activeProjectIdRef.current)) {
+              setActiveProjectId(docs[0].id);
+            } else if (docs.length === 0) {
+              setActiveProjectId('');
+            }
+
+            // Reconcile per-project /features subcollection listeners
+            const currentIds = new Set(docs.map((d) => d.id));
+            for (const [pid, unsub] of featureUnsubs.entries()) {
+              if (!currentIds.has(pid)) {
+                unsub();
+                featureUnsubs.delete(pid);
+                featuresByProject.delete(pid);
+              }
+            }
+
+            for (const prj of docs) {
+              if (!featureUnsubs.has(prj.id)) {
+                const featQ = query(
+                  collection(db, 'projects', prj.id, 'features'),
+                  where('ownerId', '==', user.uid)
+                );
+                const fUnsub = onSnapshot(
+                  featQ,
+                  (fSnap) => {
+                    if (cancelled) return;
+                    const parsed = fSnap.docs
+                      .map((fd) => deserializeFeatureDoc(fd.data() as Record<string, unknown>))
+                      .filter((f): f is GisFeature => Boolean(f));
+                    featuresByProject.set(prj.id, parsed);
+                    emitMergedFeatures();
+                  },
+                  (err) => {
+                    setDbSyncStatus('error');
+                    setFirebaseError(formatFirebaseErrorMessage(err));
+                    handleFirestoreError(err, OperationType.LIST, `projects/${prj.id}/features`);
+                  }
+                );
+                featureUnsubs.set(prj.id, fUnsub);
+              }
+            }
+            emitMergedFeatures();
+          },
+          (err) => {
+            setDbSyncStatus('error');
+            setFirebaseError(formatFirebaseErrorMessage(err));
+            handleFirestoreError(err, OperationType.LIST, 'projects');
+          }
+        );
+      } catch (err) {
+        if (!cancelled) {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      unsubAuth();
+      cleanupListeners();
+    };
+  }, []);
+
+  const signInWithGoogle = async () => {
+    setFirebaseError(null);
+    try {
+      await signInWithGooglePopup();
+      setIsLoggedOut(false);
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        return;
+      }
+      setFirebaseError(formatFirebaseErrorMessage(err));
+    }
+  };
+
+  const signOutAccount = async () => {
+    try {
+      if (auth.currentUser) {
+        await signOutFirebase();
+      }
+      setIsLoggedOut(true);
+    } catch (err) {
+      setFirebaseError(formatFirebaseErrorMessage(err));
+    }
+  };
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? projects[0];
   const activeProjectFeatures = activeProject
@@ -194,14 +526,27 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
   };
 
   const updateSettings = (partial: Partial<SystemSettings>) => {
-    setSettings((prev) => ({ ...prev, ...partial }));
+    setSettings((prev) => {
+      const next = { ...prev, ...partial };
+      if (authUserRef.current) {
+        void saveUserPreferences(authUserRef.current.uid, next).catch((err) => {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        });
+      }
+      return next;
+    });
   };
 
   const createProject = (input: CreateProjectInput): VillageProject => {
-    const code = input.state.slice(0, 2).toUpperCase() || 'IN';
-    const nextNum = String(projects.length + 43).padStart(3, '0');
+    const cleanCode =
+      input.state
+        .replace(/[^a-zA-Z]/g, '')
+        .slice(0, 2)
+        .toUpperCase() || 'IN';
+    const suffix = `${String(projects.length + 43).padStart(3, '0')}-${String(Date.now()).slice(-4)}`;
     const newProject: VillageProject = {
-      id: `PRJ-${code}-2026-${nextNum}`,
+      id: `PRJ-${cleanCode}-2026-${suffix}`,
       village: input.village,
       district: input.district,
       state: input.state,
@@ -213,7 +558,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
       progress: 0,
       modelUsed: 'U-Net',
       modelVersion: 'U-Net ResNet-18 (final_drone_model)',
-      tileSize: 256,
+      tileSize: settings.defaultTileSize,
       enabledClasses: ['Buildings', 'Roads', 'Water', 'Vegetation'],
       orthophoto: null,
       lastProcessedAt: 'Not processed',
@@ -222,6 +567,16 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
     };
     setProjects((prev) => [newProject, ...prev]);
     setActiveProjectId(newProject.id);
+
+    if (authUserRef.current) {
+      setDbSyncStatus('syncing');
+      void createProjectInFirestore(authUserRef.current.uid, newProject)
+        .then(() => setDbSyncStatus('synced'))
+        .catch((err) => {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        });
+    }
     return newProject;
   };
 
@@ -235,6 +590,12 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
     } else {
       uploadedFilesRef.current.delete(projectId);
     }
+    if (meta.imageUrl) {
+      localOrthoUrlsRef.current.set(projectId, meta.imageUrl);
+    }
+    localMasksRef.current.delete(projectId);
+
+    const nextStages = buildStages(2);
     setProjects((prev) =>
       prev.map((p) =>
         p.id === projectId
@@ -245,11 +606,28 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
               status: 'Pending',
               progress: 0,
               errorMessage: undefined,
-              stages: buildStages(2),
+              stages: nextStages,
             }
           : p
       )
     );
+
+    if (authUserRef.current) {
+      setDbSyncStatus('syncing');
+      void updateProjectFieldsInFirestore(projectId, {
+        orthophoto: sanitizeOrthophotoMeta(meta),
+        segmentationSummary: null,
+        status: 'Pending',
+        progress: 0,
+        errorMessage: null,
+        stages: nextStages,
+      })
+        .then(() => setDbSyncStatus('synced'))
+        .catch((err) => {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        });
+    }
   };
 
   const updateProcessingConfig = (
@@ -265,25 +643,40 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
       'DeepLabV3+': 'DeepLabV3+ v1.8',
       'U-Net': 'U-Net ResNet-18 (final_drone_model)',
     };
+    const modelVersion = versionMap[config.modelUsed];
+
     setProjects((prev) =>
       prev.map((p) =>
         p.id === projectId
           ? {
               ...p,
               modelUsed: config.modelUsed,
-              modelVersion: versionMap[config.modelUsed],
+              modelVersion,
               tileSize: config.tileSize,
               enabledClasses: config.enabledClasses,
             }
           : p
       )
     );
+
+    if (authUserRef.current) {
+      void updateProjectFieldsInFirestore(projectId, {
+        modelUsed: config.modelUsed,
+        modelVersion,
+        tileSize: config.tileSize,
+        enabledClasses: config.enabledClasses,
+      }).catch((err) => {
+        setDbSyncStatus('error');
+        setFirebaseError(formatFirebaseErrorMessage(err));
+      });
+    }
   };
 
   const startProcessing = (projectId: string, simulateFailure = false) => {
     const target = projects.find((p) => p.id === projectId);
     if (!target || !target.orthophoto) return;
 
+    const processingStages = buildStages(1);
     setProjects((prev) =>
       prev.map((p) =>
         p.id === projectId
@@ -292,17 +685,29 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
               status: 'Processing',
               progress: 12,
               errorMessage: undefined,
-              stages: buildStages(1),
+              stages: processingStages,
             }
           : p
       )
     );
 
+    if (authUserRef.current) {
+      setDbSyncStatus('syncing');
+      void updateProjectFieldsInFirestore(projectId, {
+        status: 'Processing',
+        progress: 12,
+        errorMessage: null,
+        stages: processingStages,
+      }).catch((err) => {
+        setDbSyncStatus('error');
+        setFirebaseError(formatFirebaseErrorMessage(err));
+      });
+    }
+
     const runRealInference = async () => {
       try {
-        // Step 1-4 progression
         for (const s of [2, 3, 4]) {
-          await new Promise((r) => setTimeout(r, 220));
+          await new Promise((r) => setTimeout(r, 200));
           setProjects((prev) =>
             prev.map((p) =>
               p.id === projectId
@@ -313,7 +718,10 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
         }
 
         if (simulateFailure) {
-          await new Promise((r) => setTimeout(r, 260));
+          await new Promise((r) => setTimeout(r, 240));
+          const failMsg =
+            'AI Inference halted: Corrupted raster band metadata in tile batch (x:08, y:12). Verify GeoTIFF CRS and retry.';
+          const failStages = buildStages(4, 5);
           setProjects((prev) =>
             prev.map((p) =>
               p.id === projectId
@@ -321,13 +729,23 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
                     ...p,
                     status: 'Failed',
                     progress: 48,
-                    errorMessage:
-                      'AI Inference halted: Corrupted raster band metadata in tile batch (x:08, y:12). Verify GeoTIFF CRS and retry.',
-                    stages: buildStages(4, 5),
+                    errorMessage: failMsg,
+                    stages: failStages,
                   }
                 : p
             )
           );
+          if (authUserRef.current) {
+            void updateProjectFieldsInFirestore(projectId, {
+              status: 'Failed',
+              progress: 48,
+              errorMessage: failMsg,
+              stages: failStages,
+            }).catch((err) => {
+              setDbSyncStatus('error');
+              setFirebaseError(formatFirebaseErrorMessage(err));
+            });
+          }
           setNotifications((prev) => [
             {
               id: `NTF-${Date.now()}`,
@@ -342,7 +760,6 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        // Stage 5: AI Inference via /api/analyze (forwards to Flask U-Net if running, else runs tiled CV engine)
         let flaskMasks:
           | { overlayUrl: string; buildingsMaskUrl: string; roadsMaskUrl: string }
           | undefined;
@@ -383,7 +800,7 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
             }
           }
         } catch {
-          // Proceed with local tiled segmentation engine
+          // Proceed with local tiled CV + TensorFlow.js RoofNet CNN
         }
 
         const segResult = await runTiledDroneSegmentation(
@@ -396,9 +813,10 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
           }
         );
 
-        // Stages 6-9 completion
+        captureLocalArtifacts(projectId, segResult.outputs, segResult.features);
+
         for (const s of [6, 7, 8]) {
-          await new Promise((r) => setTimeout(r, 180));
+          await new Promise((r) => setTimeout(r, 160));
           setProjects((prev) =>
             prev.map((p) =>
               p.id === projectId
@@ -413,32 +831,41 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
           minute: '2-digit',
         });
 
+        const completedProject: VillageProject = {
+          ...target,
+          status: 'Completed',
+          progress: 100,
+          lastProcessedAt: `Today ${nowStr} IST`,
+          orthophoto: target.orthophoto
+            ? {
+                ...target.orthophoto,
+                widthPx: segResult.width,
+                heightPx: segResult.height,
+              }
+            : null,
+          segmentationOutputs: segResult.outputs,
+          errorMessage: undefined,
+          stages: buildStages(9),
+        };
+
         setProjects((prev) =>
-          prev.map((p) =>
-            p.id === projectId
-              ? {
-                  ...p,
-                  status: 'Completed',
-                  progress: 100,
-                  lastProcessedAt: `Today ${nowStr} IST`,
-                  orthophoto: p.orthophoto
-                    ? {
-                        ...p.orthophoto,
-                        widthPx: segResult.width,
-                        heightPx: segResult.height,
-                      }
-                    : null,
-                  segmentationOutputs: segResult.outputs,
-                  stages: buildStages(9),
-                }
-              : p
-          )
+          prev.map((p) => (p.id === projectId ? completedProject : p))
         );
 
         setFeatures((prev) => [
           ...prev.filter((f) => f.projectId !== projectId),
           ...segResult.features,
         ]);
+
+        if (authUserRef.current) {
+          setDbSyncStatus('syncing');
+          await persistProcessedProjectAndFeatures(
+            authUserRef.current.uid,
+            completedProject,
+            segResult.features
+          );
+          setDbSyncStatus('synced');
+        }
 
         const firstBld = segResult.features.find((f) => f.featureClass === 'building');
         if (firstBld && activeProjectIdRef.current === projectId) {
@@ -449,10 +876,8 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
           {
             id: `NTF-${Date.now()}`,
             title: `${target.village} extraction completed`,
-            detail: `Extracted ${segResult.features.length} vector features via ${
-              segResult.outputs.inferenceEngine === 'pytorch-flask'
-                ? 'PyTorch U-Net (ResNet-18)'
-                : '256×256 Tiled Segmentation Engine'
+            detail: `Extracted ${segResult.features.length} features with TensorFlow.js RoofNet-2D CNN${
+              authUserRef.current ? ' & saved to Firestore' : ''
             }.`,
             timestamp: 'Just now',
             read: false,
@@ -461,6 +886,9 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
           ...prev,
         ]);
       } catch (err) {
+        const errMsg =
+          err instanceof Error ? err.message : 'Failed to process orthophoto image.';
+        const failStages = buildStages(4, 5);
         setProjects((prev) =>
           prev.map((p) =>
             p.id === projectId
@@ -468,13 +896,22 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
                   ...p,
                   status: 'Failed',
                   progress: 48,
-                  errorMessage:
-                    err instanceof Error ? err.message : 'Failed to process orthophoto image.',
-                  stages: buildStages(4, 5),
+                  errorMessage: errMsg,
+                  stages: failStages,
                 }
               : p
           )
         );
+        if (authUserRef.current) {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+          void updateProjectFieldsInFirestore(projectId, {
+            status: 'Failed',
+            progress: 48,
+            errorMessage: errMsg.slice(0, 500),
+            stages: failStages,
+          }).catch(() => undefined);
+        }
       }
     };
 
@@ -483,6 +920,8 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
 
   const deleteProject = (projectId: string) => {
     uploadedFilesRef.current.delete(projectId);
+    localOrthoUrlsRef.current.delete(projectId);
+    localMasksRef.current.delete(projectId);
     setFeatures((prev) => prev.filter((f) => f.projectId !== projectId));
     setProjects((prev) => {
       const next = prev.filter((p) => p.id !== projectId);
@@ -491,25 +930,70 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
       }
       return next;
     });
+    if (authUserRef.current) {
+      setDbSyncStatus('syncing');
+      void deleteProjectAndFeaturesFromFirestore(authUserRef.current.uid, projectId)
+        .then(() => setDbSyncStatus('synced'))
+        .catch((err) => {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        });
+    }
   };
 
   const clearAllProjects = () => {
     uploadedFilesRef.current.clear();
+    localOrthoUrlsRef.current.clear();
+    localMasksRef.current.clear();
     setProjects([]);
     setFeatures([]);
     setActiveProjectId('');
     setSelectedFeatureId(null);
+
+    if (authUserRef.current) {
+      setDbSyncStatus('syncing');
+      void clearAllUserProjectsInFirestore(authUserRef.current.uid)
+        .then(() => setDbSyncStatus('synced'))
+        .catch((err) => {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        });
+    }
   };
 
   const resetDemoData = () => {
     uploadedFilesRef.current.clear();
+    localOrthoUrlsRef.current.clear();
+    localMasksRef.current.clear();
+    hydratedStaticRef.current.clear();
+
+    if (authUserRef.current) {
+      const uid = authUserRef.current.uid;
+      setDbSyncStatus('syncing');
+      void (async () => {
+        try {
+          await clearAllUserProjectsInFirestore(uid);
+          await markDemoInitialized(uid, false);
+          const seeded = await computeBootstrapData();
+          await seedProjectsAndFeaturesToFirestore(uid, seeded.projects, seeded.features);
+          setActiveProjectId(INITIAL_PROJECTS[0].id);
+          setNotifications(INITIAL_NOTIFICATIONS);
+          setDbSyncStatus('synced');
+        } catch (err) {
+          setDbSyncStatus('error');
+          setFirebaseError(formatFirebaseErrorMessage(err));
+        }
+      })();
+      return;
+    }
+
     setProjects(INITIAL_PROJECTS);
     setFeatures(INITIAL_FEATURES);
     setActiveProjectId(INITIAL_PROJECTS[0].id);
     activeProjectIdRef.current = INITIAL_PROJECTS[0].id;
     setSelectedFeatureId(null);
     setNotifications(INITIAL_NOTIFICATIONS);
-    void runBootstrapSegmentation();
+    void runLocalBootstrapSegmentation();
   };
 
   return (
@@ -545,6 +1029,14 @@ export function GisProvider({ children }: { children: React.ReactNode }) {
         isLoggedOut,
         setIsLoggedOut,
         backendHealth,
+        authUser,
+        authReady,
+        firestoreConnected,
+        dbSyncStatus,
+        firebaseError,
+        clearFirebaseError: () => setFirebaseError(null),
+        signInWithGoogle,
+        signOutAccount,
       }}
     >
       {children}

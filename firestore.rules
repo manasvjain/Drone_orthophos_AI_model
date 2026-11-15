@@ -1,0 +1,251 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: default deny everything
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isOwner(uid) {
+      return isVerifiedUser() && request.auth.uid == uid;
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'role', 'initializedDemo', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'role', 'initializedDemo', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.role is string && data.role == 'GIS Analyst' && data.role.size() <= 32
+        && data.initializedDemo is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPrivateInfo(data, userId) {
+      return data.keys().hasAll(['uid', 'email', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'updatedAt'])
+        && data.uid is string && data.uid == userId && isValidId(data.uid)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserPreferences(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'defaultCrs', 'defaultTileSize', 'defaultConfidenceThreshold',
+          'autoVectorizePostInference', 'snapParcelToleranceM', 'exportIncludeMetadata', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'defaultCrs', 'defaultTileSize', 'defaultConfidenceThreshold',
+          'autoVectorizePostInference', 'snapParcelToleranceM', 'exportIncludeMetadata', 'updatedAt'
+        ])
+        && data.ownerId is string && data.ownerId == userId && isValidId(data.ownerId)
+        && data.defaultCrs is string && data.defaultCrs in ['EPSG:32643', 'EPSG:32644', 'EPSG:4326'] && data.defaultCrs.size() <= 16
+        && data.defaultTileSize is number && data.defaultTileSize in [256, 512, 1024]
+        && data.defaultConfidenceThreshold is number && data.defaultConfidenceThreshold >= 0.1 && data.defaultConfidenceThreshold <= 1.0
+        && data.autoVectorizePostInference is bool
+        && data.snapParcelToleranceM is number && data.snapParcelToleranceM >= 0.05 && data.snapParcelToleranceM <= 5.0
+        && data.exportIncludeMetadata is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidProject(data, projectId) {
+      return data.keys().hasAll([
+          'id', 'ownerId', 'village', 'district', 'state', 'latitude', 'longitude',
+          'surveyDate', 'description', 'status', 'progress', 'modelUsed', 'modelVersion',
+          'tileSize', 'enabledClasses', 'lastProcessedAt', 'wards', 'stages', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'village', 'district', 'state', 'latitude', 'longitude',
+          'surveyDate', 'description', 'status', 'progress', 'modelUsed', 'modelVersion',
+          'tileSize', 'enabledClasses', 'orthophoto', 'segmentationSummary',
+          'lastProcessedAt', 'wards', 'errorMessage', 'stages', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == projectId && data.id.size() <= 64 && isValidId(data.id)
+        && data.ownerId is string && data.ownerId == request.auth.uid && isValidId(data.ownerId)
+        && data.village is string && data.village.size() >= 1 && data.village.size() <= 120
+        && data.district is string && data.district.size() >= 1 && data.district.size() <= 120
+        && data.state is string && data.state.size() >= 1 && data.state.size() <= 80
+        && data.latitude is number && data.latitude >= -90 && data.latitude <= 90
+        && data.longitude is number && data.longitude >= -180 && data.longitude <= 180
+        && data.surveyDate is string && data.surveyDate.size() <= 32
+        && data.description is string && data.description.size() <= 1000
+        && data.status is string && data.status in ['Completed', 'Processing', 'Pending', 'Failed', 'Draft'] && data.status.size() <= 24
+        && data.progress is number && data.progress >= 0 && data.progress <= 100
+        && data.modelUsed is string && data.modelUsed in ['U-Net', 'DeepLabV3+', 'SegFormer'] && data.modelUsed.size() <= 32
+        && data.modelVersion is string && data.modelVersion.size() <= 120
+        && data.tileSize is number && data.tileSize in [256, 512, 1024]
+        && data.enabledClasses is list && data.enabledClasses.size() >= 1 && data.enabledClasses.size() <= 4
+        && data.enabledClasses.hasOnly(['Buildings', 'Roads', 'Water', 'Vegetation'])
+        && (!('orthophoto' in data) || data.orthophoto == null || data.orthophoto is map)
+        && (!('segmentationSummary' in data) || data.segmentationSummary == null || data.segmentationSummary is map)
+        && data.lastProcessedAt is string && data.lastProcessedAt.size() <= 64
+        && data.wards is list && data.wards.size() <= 20 && (data.wards.size() == 0 || (data.wards[0] is string && data.wards[0].size() <= 120))
+        && (!('errorMessage' in data) || data.errorMessage == null || (data.errorMessage is string && data.errorMessage.size() <= 500))
+        && data.stages is list && data.stages.size() <= 12 && (data.stages.size() == 0 || data.stages[0] is map)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidFeature(data, projectId, featureId) {
+      return data.keys().hasAll([
+          'id', 'projectId', 'ownerId', 'featureClass', 'ward',
+          'confidence', 'modelVersion', 'processingDate', 'points', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'projectId', 'ownerId', 'featureClass', 'ward',
+          'confidence', 'modelVersion', 'processingDate', 'points',
+          'areaSqm', 'perimeterM', 'roofType', 'roofConfidence', 'roofClassifier',
+          'centroidLat', 'centroidLng', 'lengthM', 'surfaceClass', 'widthM',
+          'waterType', 'coveragePct', 'canopyType', 'parcelNo',
+          'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == featureId && data.id.size() <= 64 && isValidId(data.id)
+        && data.projectId is string && data.projectId == projectId && data.projectId.size() <= 64 && isValidId(data.projectId)
+        && data.ownerId is string && data.ownerId == request.auth.uid && isValidId(data.ownerId)
+        && data.featureClass is string && data.featureClass in ['building', 'road', 'water', 'vegetation', 'parcel'] && data.featureClass.size() <= 24
+        && data.ward is string && data.ward.size() <= 120
+        && data.confidence is number && data.confidence >= 0 && data.confidence <= 1
+        && data.modelVersion is string && data.modelVersion.size() <= 120
+        && data.processingDate is string && data.processingDate.size() <= 32
+        && data.points is list && data.points.size() >= 2 && data.points.size() <= 400 && data.points[0] is map
+        && (!('areaSqm' in data) || data.areaSqm is number)
+        && (!('perimeterM' in data) || data.perimeterM is number)
+        && (!('roofType' in data) || (data.roofType is string && data.roofType in ['RCC', 'Tiled', 'Tin', 'Other', 'Unknown'] && data.roofType.size() <= 24))
+        && (!('roofConfidence' in data) || (data.roofConfidence is number && data.roofConfidence >= 0 && data.roofConfidence <= 1))
+        && (!('roofClassifier' in data) || (data.roofClassifier is string && data.roofClassifier.size() <= 64))
+        && (!('centroidLat' in data) || data.centroidLat is number)
+        && (!('centroidLng' in data) || data.centroidLng is number)
+        && (!('lengthM' in data) || data.lengthM is number)
+        && (!('surfaceClass' in data) || (data.surfaceClass is string && data.surfaceClass.size() <= 120))
+        && (!('widthM' in data) || data.widthM is number)
+        && (!('waterType' in data) || (data.waterType is string && data.waterType.size() <= 64))
+        && (!('coveragePct' in data) || data.coveragePct is number)
+        && (!('canopyType' in data) || (data.canopyType is string && data.canopyType.size() <= 120))
+        && (!('parcelNo' in data) || (data.parcelNo is string && data.parcelNo.size() <= 64))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow create: if isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId) && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().role == existing().role
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'initializedDemo', 'updatedAt']);
+
+      match /private/info {
+        allow get: if isValidId(userId) && isOwner(userId);
+        allow create: if isValidId(userId) && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isOwner(userId)
+          && isValidUserPrivateInfo(incoming(), userId)
+          && incoming().uid == existing().uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+      }
+
+      match /preferences/default {
+        allow get: if isValidId(userId) && isOwner(userId);
+        allow create: if isValidId(userId) && isOwner(userId)
+          && isValidUserPreferences(incoming(), userId)
+          && incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isOwner(userId)
+          && isValidUserPreferences(incoming(), userId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'defaultCrs', 'defaultTileSize', 'defaultConfidenceThreshold',
+            'autoVectorizePostInference', 'snapParcelToleranceM', 'exportIncludeMetadata', 'updatedAt'
+          ]);
+      }
+    }
+
+    match /projects/{projectId} {
+      allow get: if isValidId(projectId) && isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+      allow create: if isValidId(projectId) && isVerifiedUser()
+        && isValidProject(incoming(), projectId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(projectId) && isVerifiedUser()
+        && existing().ownerId == request.auth.uid
+        && isValidProject(incoming(), projectId)
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action: Attach or update orthophoto
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'orthophoto', 'segmentationSummary', 'status', 'progress', 'errorMessage', 'stages', 'updatedAt'
+          ]) ||
+          // Action: Update model / tile / class configuration
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'modelUsed', 'modelVersion', 'tileSize', 'enabledClasses', 'updatedAt'
+          ]) ||
+          // Action: Progress / complete / fail inference pipeline
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'progress', 'lastProcessedAt', 'orthophoto', 'segmentationSummary', 'errorMessage', 'stages', 'updatedAt'
+          ])
+        );
+      allow delete: if isValidId(projectId) && isVerifiedUser() && existing().ownerId == request.auth.uid;
+
+      match /features/{featureId} {
+        allow get: if isValidId(projectId) && isValidId(featureId) && isVerifiedUser()
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+        allow list: if isVerifiedUser()
+          && existing().ownerId == request.auth.uid
+          && existing().projectId == projectId;
+        allow create: if isValidId(projectId) && isValidId(featureId) && isVerifiedUser()
+          && isValidFeature(incoming(), projectId, featureId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && getAfter(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+        allow update: if isValidId(projectId) && isValidId(featureId) && isVerifiedUser()
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid
+          && isValidFeature(incoming(), projectId, featureId)
+          && incoming().id == existing().id
+          && incoming().projectId == existing().projectId
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'confidence', 'roofType', 'roofConfidence', 'roofClassifier', 'ward', 'updatedAt'
+          ]);
+        allow delete: if isValidId(projectId) && isValidId(featureId) && isVerifiedUser()
+          && existing().ownerId == request.auth.uid
+          && get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId == request.auth.uid;
+      }
+    }
+  }
+}

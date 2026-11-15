@@ -1,11 +1,15 @@
 import { useState } from 'react';
-import { Check, Database, RotateCcw, Trash2 } from 'lucide-react';
+import { Check, Cloud, CloudOff, Database, RotateCcw, Trash2 } from 'lucide-react';
 import { MODEL_BENCHMARKS } from '../data/mockGisData';
 import { useGis } from '../context/GisContext';
 import { ConfirmDialog } from '../components/ui/Modal';
+import { getRoofCnnStatus } from '../utils/roofCnnClassifier';
+import { getActiveCalibrationProfile } from '../utils/segmentationCalibration';
 
 export function ModelRegistryPage() {
-  const { setActivePage, setAnalyticsTab, backendHealth } = useGis();
+  const { setActivePage, setAnalyticsTab, backendHealth, firestoreConnected, authUser } = useGis();
+  const roofStatus = getRoofCnnStatus();
+  const calProfile = getActiveCalibrationProfile();
 
   return (
     <div className="p-4 lg:p-6 space-y-5 max-w-[1600px] mx-auto">
@@ -13,19 +17,31 @@ export function ModelRegistryPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight text-[#252A27]">Model Registry</h1>
           <p className="text-xs text-[#727A75] mt-0.5">
-            Registered semantic segmentation and roof classification checkpoints.
+            Registered semantic segmentation models, TensorFlow.js 2D-CNN roof classifier, and database gateway.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => {
-            setAnalyticsTab('comparison');
-            setActivePage('model-lab');
-          }}
-          className="h-9 px-3.5 bg-white border border-[#E4E6DF] hover:bg-[#F7F7F2] text-xs font-medium text-[#252A27] rounded-[4px] whitespace-nowrap"
-        >
-          Open Model Comparison
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              setAnalyticsTab('training');
+              setActivePage('model-lab');
+            }}
+            className="h-9 px-3.5 bg-[#496B54] hover:bg-[#3D5B47] text-xs font-medium text-white rounded-[4px] whitespace-nowrap"
+          >
+            Train / Calibrate on Dataset
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setAnalyticsTab('comparison');
+              setActivePage('model-lab');
+            }}
+            className="h-9 px-3.5 bg-white border border-[#E4E6DF] hover:bg-[#F7F7F2] text-xs font-medium text-[#252A27] rounded-[4px] whitespace-nowrap"
+          >
+            Open Model Comparison
+          </button>
+        </div>
       </div>
 
       <div className="bg-white border border-[#E4E6DF] rounded-[4px] p-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
@@ -34,21 +50,23 @@ export function ModelRegistryPage() {
           <div className="font-mono font-semibold text-[#252A27] mt-0.5">
             {backendHealth.activeEngine === 'pytorch-flask'
               ? 'PyTorch Flask (final_drone_model.pth)'
-              : '256×256 Tiled Segmentation Engine'}
+              : '256×256 Tiled Segmentation + RoofNet-2D CNN'}
           </div>
         </div>
         <div>
-          <div className="text-[11px] text-[#727A75]">Flask PyTorch Bridge (/api/analyze)</div>
+          <div className="text-[11px] text-[#727A75]">Roof Material Classifier</div>
           <div className="font-medium text-[#252A27] mt-0.5">
-            {backendHealth.pythonBridgeReachable && backendHealth.modelFilePresent
-              ? 'Connected (final_drone_model.pth loaded)'
-              : 'Standby (using browser tiled segmentation)'}
+            TensorFlow.js RoofNet-2D CNN (32×32×3 RGB patch)
           </div>
         </div>
         <div>
-          <div className="text-[11px] text-[#727A75]">Default Tiling & Classes</div>
+          <div className="text-[11px] text-[#727A75]">Cloud Firestore Database</div>
           <div className="font-mono text-[#252A27] mt-0.5">
-            256×256 px · Classes: 1:Bld, 2:Veg, 3:Water, 4:Road
+            {authUser
+              ? 'Authenticated Sync Active'
+              : firestoreConnected
+                ? 'Provisioned (Sign in to sync)'
+                : 'Local Session Mode'}
           </div>
         </div>
       </div>
@@ -94,6 +112,54 @@ export function ModelRegistryPage() {
                   </td>
                 </tr>
               ))}
+              <tr className="hover:bg-[#FAFBF8]">
+                <td className="py-3 px-4 font-semibold text-[#252A27]">
+                  <div className="flex items-center gap-2">
+                    <Database size={14} className="text-[#496B54]" />
+                    <span>RoofNet-2D CNN (TensorFlow.js)</span>
+                  </div>
+                </td>
+                <td className="py-3 px-4 text-[#4B524E]">
+                  Conv2D (5×5 + 3×3) + GlobalAvg/Max Pool + Softmax
+                </td>
+                <td className="py-3 px-4 font-mono text-[#252A27]">tfjs-roofnet-v1</td>
+                <td className="py-3 px-4 text-right font-mono tabular-nums text-[#252A27]">
+                  32×32
+                </td>
+                <td className="py-3 px-4 text-right font-mono tabular-nums text-[#727A75]">
+                  0.002M
+                </td>
+                <td className="py-3 px-4">
+                  <span className="text-xs font-medium text-[#3C5C47]">
+                    {roofStatus.fineTuned
+                      ? `Fine-Tuned (${roofStatus.epochsTrained} ep · IndexedDB)`
+                      : 'Active (RCC / Tiled / Tin / Other)'}
+                  </span>
+                </td>
+              </tr>
+              <tr className="hover:bg-[#FAFBF8]">
+                <td className="py-3 px-4 font-semibold text-[#252A27]">
+                  <div className="flex items-center gap-2">
+                    <Database size={14} className="text-[#496B54]" />
+                    <span>Adaptive Segmentation Calibration</span>
+                  </div>
+                </td>
+                <td className="py-3 px-4 text-[#4B524E]">{calProfile.datasetSource}</td>
+                <td className="py-3 px-4 font-mono text-[#252A27]">{calProfile.profileName}</td>
+                <td className="py-3 px-4 text-right font-mono tabular-nums text-[#252A27]">
+                  256×256
+                </td>
+                <td className="py-3 px-4 text-right font-mono tabular-nums text-[#727A75]">
+                  12 params
+                </td>
+                <td className="py-3 px-4">
+                  <span className="text-xs font-medium text-[#3C5C47]">
+                    {calProfile.calibratedMeanIoU !== null
+                      ? `Calibrated (mIoU ${calProfile.calibratedMeanIoU.toFixed(3)})`
+                      : 'Baseline Profile'}
+                  </span>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -103,7 +169,17 @@ export function ModelRegistryPage() {
 }
 
 export function SettingsPage() {
-  const { settings, updateSettings, clearAllProjects, resetDemoData } = useGis();
+  const {
+    settings,
+    updateSettings,
+    clearAllProjects,
+    resetDemoData,
+    authUser,
+    firestoreConnected,
+    dbSyncStatus,
+    signInWithGoogle,
+    signOutAccount,
+  } = useGis();
   const [savedNotice, setSavedNotice] = useState(false);
   const [confirmClearOpen, setConfirmClearOpen] = useState(false);
 
@@ -117,8 +193,73 @@ export function SettingsPage() {
       <div className="border-b border-[#E4E6DF] pb-4">
         <h1 className="text-xl font-semibold tracking-tight text-[#252A27]">Settings</h1>
         <p className="text-xs text-[#727A75] mt-0.5">
-          Configure spatial defaults, inference parameters, and demonstration dataset state.
+          Configure Cloud Firestore database sync, spatial defaults, and demonstration dataset state.
         </p>
+      </div>
+
+      {/* Cloud Firestore Persistence & Account */}
+      <div className="bg-white border border-[#E4E6DF] rounded-[4px] p-5 space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-semibold text-[#252A27]">
+              Cloud Firestore Database & Analyst Account
+            </h2>
+            <p className="text-xs text-[#727A75] mt-0.5">
+              Persist village projects, extracted GIS vector features, roof attributes, and preferences across sessions.
+            </p>
+          </div>
+          {authUser ? (
+            <button
+              type="button"
+              onClick={() => void signOutAccount()}
+              className="h-9 px-3.5 bg-white border border-[#E4E6DF] hover:bg-[#F7F7F2] text-xs font-medium text-[#252A27] rounded-[4px] shrink-0 whitespace-nowrap"
+            >
+              Sign Out
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void signInWithGoogle()}
+              className="h-9 px-3.5 bg-[#496B54] hover:bg-[#3D5B47] text-white text-xs font-medium rounded-[4px] shrink-0 whitespace-nowrap"
+            >
+              Sign in with Google
+            </button>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 border-t border-[#E4E6DF] text-xs">
+          <div>
+            <div className="text-[11px] text-[#727A75]">Sync Status</div>
+            <div className="mt-0.5 font-medium text-[#252A27] flex items-center gap-1.5">
+              {authUser ? (
+                <Cloud size={13} className="text-[#496B54]" />
+              ) : (
+                <CloudOff size={13} className="text-[#727A75]" />
+              )}
+              <span>
+                {authUser
+                  ? dbSyncStatus === 'syncing'
+                    ? 'Syncing with Firestore'
+                    : dbSyncStatus === 'error'
+                      ? 'Sync Alert'
+                      : 'Cloud Firestore Synced'
+                  : 'Local Session Only'}
+              </span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[#727A75]">Signed-In Account</div>
+            <div className="mt-0.5 font-mono text-[#252A27] truncate">
+              {authUser?.email || 'Not signed in'}
+            </div>
+          </div>
+          <div>
+            <div className="text-[11px] text-[#727A75]">Database Connectivity</div>
+            <div className="mt-0.5 font-mono text-[#252A27]">
+              {firestoreConnected ? 'Firestore Online' : 'Checking connectivity...'}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="bg-white border border-[#E4E6DF] rounded-[4px] p-5 space-y-4">
@@ -230,10 +371,16 @@ export function SettingsPage() {
           {savedNotice ? (
             <span className="text-xs font-medium text-[#3C5C47] inline-flex items-center gap-1.5">
               <Check size={14} />
-              Preferences updated for active session.
+              {authUser
+                ? 'Preferences saved to Cloud Firestore.'
+                : 'Preferences updated for active local session.'}
             </span>
           ) : (
-            <span className="text-[11px] text-[#727A75]">Changes apply to new processing jobs.</span>
+            <span className="text-[11px] text-[#727A75]">
+              {authUser
+                ? 'Changes automatically sync to your Firestore user preferences.'
+                : 'Changes apply to new processing jobs.'}
+            </span>
           )}
           <button
             type="button"
@@ -245,7 +392,7 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* Workspace State Controls (helps test empty states cleanly) */}
+      {/* Workspace State Controls */}
       <div className="bg-white border border-[#E4E6DF] rounded-[4px] p-5 space-y-3">
         <h2 className="text-sm font-semibold text-[#252A27]">Demonstration Dataset Controls</h2>
         <p className="text-xs text-[#727A75]">
@@ -276,7 +423,7 @@ export function SettingsPage() {
         onClose={() => setConfirmClearOpen(false)}
         onConfirm={clearAllProjects}
         title="Clear Workspace Projects"
-        message="This removes all village projects from the current session so you can test empty states or create a project from scratch. You can restore them anytime via Reset Demo Data."
+        message="This removes all village projects from the current workspace (and Cloud Firestore if signed in). You can restore them anytime via Reset Demo Data."
         confirmLabel="Clear Workspace"
         destructive
       />

@@ -9,7 +9,7 @@ export type PageId =
   | 'registry'
   | 'settings';
 
-export type AnalyticsTabId = 'village' | 'comparison' | 'explainable' | 'exports';
+export type AnalyticsTabId = 'village' | 'comparison' | 'explainable' | 'training' | 'exports';
 
 export type ProcessingStatus =
   | 'Completed'
@@ -109,6 +109,7 @@ export interface BuildingFeature extends GisFeatureBase {
   perimeterM: number;
   roofType: RoofType;
   roofConfidence: number;
+  roofClassifier?: string;
   centroid: [number, number]; // [lat, lng]
   roofPreviewUrl?: string;
 }
