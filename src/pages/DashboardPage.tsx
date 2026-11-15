@@ -202,7 +202,7 @@ export function DashboardPage() {
               </h2>
               <p className="text-[11px] text-[#727A75] truncate mt-0.5">
                 {activeProject?.orthophoto
-                  ? `${activeProject.orthophoto.crs} · ${activeProject.orthophoto.resolutionCm > 0 ? `${activeProject.orthophoto.resolutionCm} cm GSD` : 'GSD unavailable'}`
+                  ? `${activeProject.orthophoto.georeferenced ? activeProject.orthophoto.crs : 'Image pixels — not georeferenced'} · ${activeProject.orthophoto.georeferenced && activeProject.orthophoto.resolutionCm > 0 ? `${activeProject.orthophoto.resolutionCm} cm GSD` : 'GSD unavailable'}`
                   : 'Select a village with uploaded orthophoto imagery'}
               </p>
             </div>
