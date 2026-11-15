@@ -158,6 +158,12 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {activeProject?.segmentationOutputs?.measurementQuality === 'estimated' && (
+        <div className="px-3 py-2 bg-[#FFF8E8] border border-[#E8D9B4] rounded-[4px] text-[11px] text-[#765B22]">
+          Spatial measurements are estimates: this orthophoto has no verified CRS and ground sample distance. Do not use the displayed areas or lengths for official survey records.
+        </div>
+      )}
+
       {/* Six Compact Metric Blocks */}
       <section aria-label="Platform Summary Metrics" className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <MetricBlock label="Total Projects" value={stats.totalProjects} subtext="SVAMITVA survey blocks" />
