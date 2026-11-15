@@ -21,15 +21,15 @@ MODEL_PATH = ROOT / "final_drone_model.pth"
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 40 * 1024 * 1024
 
-# Allow requests from your Vercel frontend
-allowed_origins = os.getenv(
-    "FRONTEND_URL",
-    "https://droneorthophos-aimodel.vercel.app"
-).split(",")
-
-CORS(app, resources={
-    r"/api/*": {"origins": allowed_origins}
-})
+# This API is public and does not use cookie-based authentication.
+# Allow browser requests from the deployed frontend and local development.
+CORS(
+    app,
+    resources={r"/api/*": {"origins": "*"}},
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    max_age=600,
+)
 
 
 @torch.inference_mode()
