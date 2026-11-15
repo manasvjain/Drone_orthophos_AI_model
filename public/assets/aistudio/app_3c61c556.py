@@ -32,6 +32,12 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent
 MODEL_PATH = ROOT / "final_drone_model.pth"
 MAX_INFERENCE_DIM = 1536
+# The training dataset uses 256 px tiles with a 192 px stride (64 px overlap).
+# Match that context at inference instead of making non-overlapping predictions.
+INFERENCE_TILE_SIZE = 256
+INFERENCE_TILE_STRIDE = int(os.getenv("INFERENCE_TILE_STRIDE", "192"))
+if not 1 <= INFERENCE_TILE_STRIDE <= INFERENCE_TILE_SIZE:
+    raise ValueError("INFERENCE_TILE_STRIDE must be between 1 and 256")
 inference_lock = threading.Lock()
 
 app = Flask(__name__)
@@ -70,36 +76,65 @@ def load_model():
     return model, np.asarray(checkpoint["labels"], dtype=np.uint8)
 
 
+def tile_starts(length, tile_size, stride):
+    """Cover an axis fully and always include a tile aligned to its far edge."""
+    if length <= tile_size:
+        return [0]
+    starts = list(range(0, length - tile_size + 1, stride))
+    last = length - tile_size
+    if starts[-1] != last:
+        starts.append(last)
+    return starts
+
+
 @torch.inference_mode()
-def predict(image, model, labels, tile_size=256):
+def predict(image, model, labels, tile_size=INFERENCE_TILE_SIZE, stride=INFERENCE_TILE_STRIDE):
+    """Run overlap-tiled inference and average logits in shared regions.
+
+    The deployed checkpoint was trained with 256 px tiles and 192 px stride.
+    Averaging logits from overlapping tiles reduces hard seams and gives pixels
+    near tile borders predictions that also have interior context in a neighbour.
+    The model weights, RGB conversion, [0, 1] scaling and class decision stay unchanged.
+    """
     original = np.asarray(image.convert("RGB"))
     h, w = original.shape[:2]
 
+    pad_h = max(0, tile_size - h)
+    pad_w = max(0, tile_size - w)
     padded = cv2.copyMakeBorder(
         original,
         0,
-        (tile_size - h % tile_size) % tile_size,
+        pad_h,
         0,
-        (tile_size - w % tile_size) % tile_size,
+        pad_w,
         cv2.BORDER_REPLICATE
     )
+    padded_h, padded_w = padded.shape[:2]
 
-    classes = np.zeros(padded.shape[:2], dtype=np.uint8)
+    ys = tile_starts(padded_h, tile_size, stride)
+    xs = tile_starts(padded_w, tile_size, stride)
+    num_classes = len(labels)
 
-    for y in range(0, padded.shape[0], tile_size):
-        for x in range(0, padded.shape[1], tile_size):
+    # Accumulate class logits rather than hard labels so overlapping predictions
+    # can resolve uncertain road/background pixels without a road-specific bias.
+    logit_sum = np.zeros((num_classes, padded_h, padded_w), dtype=np.float32)
+    prediction_count = np.zeros((padded_h, padded_w), dtype=np.float32)
+
+    for y in ys:
+        for x in xs:
             tile = padded[y:y + tile_size, x:x + tile_size]
-
             tensor = (
                 torch.from_numpy(tile.transpose(2, 0, 1).copy())
                 .float()
                 .unsqueeze(0) / 255.0
             )
+            logits = model(tensor)[0].float().cpu().numpy()
+            logit_sum[:, y:y + tile_size, x:x + tile_size] += logits
+            prediction_count[y:y + tile_size, x:x + tile_size] += 1.0
 
-            indices = model(tensor).argmax(1)[0].numpy()
-            classes[y:y + tile_size, x:x + tile_size] = labels[indices]
-
-    classes = classes[:h, :w]
+    mean_logits = logit_sum / np.maximum(prediction_count[None, :, :], 1.0)
+    class_indices = mean_logits.argmax(axis=0)
+    classes = labels[class_indices].astype(np.uint8)[:h, :w]
 
     colors = {
         1: (255, 70, 70),
@@ -108,22 +143,18 @@ def predict(image, model, labels, tile_size=256):
     }
 
     painted = np.zeros_like(original)
-
     for label, color in colors.items():
         painted[classes == label] = color
 
     overlay = original.copy()
     foreground = np.isin(classes, list(colors))
-
     blended = cv2.addWeighted(original, 0.55, painted, 0.45, 0)
     overlay[foreground] = blended[foreground]
 
     buildings = (classes == 1).astype(np.uint8) * 255
     roads = (classes == 4).astype(np.uint8) * 255
-
     class_mask = classes.astype(np.uint8)
     return overlay, buildings, roads, class_mask
-
 
 def data_url(array):
     buf = io.BytesIO()
@@ -139,7 +170,10 @@ def data_url(array):
 def health():
     return jsonify({
         "ok": True,
-        "model_file": MODEL_PATH.is_file()
+        "model_file": MODEL_PATH.is_file(),
+        "tile_size": INFERENCE_TILE_SIZE,
+        "tile_stride": INFERENCE_TILE_STRIDE,
+        "overlap_pixels": INFERENCE_TILE_SIZE - INFERENCE_TILE_STRIDE
     })
 
 
