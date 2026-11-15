@@ -33,6 +33,7 @@ export interface OrthophotoMetadata {
   widthPx: number;
   heightPx: number;
   crs: string;
+  georeferenced?: boolean;
   bounds: {
     minLat: number;
     maxLat: number;
