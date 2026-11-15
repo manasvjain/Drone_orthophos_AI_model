@@ -37,7 +37,7 @@ export function AnalyticsLabPage() {
   } = useGis();
 
   // Tab 2: Model Comparison selection
-  const [selectedModelId, setSelectedModelId] = useState<SegmentationModelId>('SegFormer');
+  const [selectedModelId, setSelectedModelId] = useState<SegmentationModelId>('U-Net');
 
   // Tab 3: Explainable AI state
   const xaiCandidates = useMemo(
