@@ -963,6 +963,7 @@ export function AnalyticsLabPage() {
 
             <div>
               <div className="text-xs font-medium text-[#252A27] mb-1.5">Output Format</div>
+              <p className="text-[11px] text-[#727A75] mb-2">GeoJSON and CSV are available. Shapefile and GeoPackage are disabled until genuine file writers are integrated.</p>
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                 {(
                   ['GeoJSON', 'Shapefile', 'CSV', 'GeoPackage', 'PDF Report'] as ExportFormat[]
@@ -970,11 +971,13 @@ export function AnalyticsLabPage() {
                   <button
                     key={fmt}
                     type="button"
+                    disabled={fmt === 'Shapefile' || fmt === 'GeoPackage'}
+                    title={fmt === 'Shapefile' || fmt === 'GeoPackage' ? 'Not implemented yet — choose GeoJSON or CSV' : undefined}
                     onClick={() => {
                       setExportFormat(fmt);
                       setExportSuccessMsg(null);
                     }}
-                    className={`py-2 px-2.5 text-xs font-medium rounded-[4px] border whitespace-nowrap transition-colors ${
+                    className={`py-2 px-2.5 text-xs font-medium rounded-[4px] border whitespace-nowrap transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                       exportFormat === fmt
                         ? 'bg-[#496B54] text-white border-[#496B54]'
                         : 'bg-white text-[#252A27] border-[#E4E6DF] hover:bg-[#F7F7F2]'
