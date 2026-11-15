@@ -4,6 +4,7 @@
 import os
 import base64
 import io
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
@@ -32,6 +33,7 @@ CORS(
 )
 
 
+@lru_cache(maxsize=1)
 @torch.inference_mode()
 def load_model():
     checkpoint = torch.load(
