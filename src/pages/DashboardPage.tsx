@@ -121,7 +121,7 @@ export function DashboardPage() {
       <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 border-b border-[#E4E6DF] pb-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs text-[#727A75]">
-            <span className="font-mono tabular-nums">14 Nov 2026</span>
+            <span className="font-mono tabular-nums">{new Date().toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
             <span aria-hidden="true">·</span>
             <span className="truncate">
               Active Village:{' '}
@@ -202,7 +202,7 @@ export function DashboardPage() {
               </h2>
               <p className="text-[11px] text-[#727A75] truncate mt-0.5">
                 {activeProject?.orthophoto
-                  ? `${activeProject.orthophoto.crs} · ${activeProject.orthophoto.resolutionCm} cm GSD`
+                  ? `${activeProject.orthophoto.crs} · ${activeProject.orthophoto.resolutionCm > 0 ? `${activeProject.orthophoto.resolutionCm} cm GSD` : 'GSD unavailable'}`
                   : 'Select a village with uploaded orthophoto imagery'}
               </p>
             </div>
