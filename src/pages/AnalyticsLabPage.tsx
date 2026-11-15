@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Download, Eye, FileText, Info, Printer, Sliders } from 'lucide-react';
 import { useGis } from '../context/GisContext';
-import { MODEL_BENCHMARKS, ROOF_RCC_IMG, ROOF_TILED_IMG } from '../data/mockGisData';
+import { MODEL_BENCHMARKS } from '../data/mockGisData';
 import {
   AnalyticsTabId,
   BuildingFeature,
@@ -40,57 +40,14 @@ export function AnalyticsLabPage() {
   const [selectedModelId, setSelectedModelId] = useState<SegmentationModelId>('SegFormer');
 
   // Tab 3: Explainable AI state
-  const xaiCandidates = useMemo(() => {
-    const blds = activeProjectFeatures.filter(
-      (f): f is BuildingFeature =>
-        f.featureClass === 'building' && Boolean(f.roofPreviewUrl)
-    );
-    if (blds.length > 0) return blds;
-    return [
-      {
-        id: 'BLD-KS-001',
-        projectId: 'PRJ-HR-2026-014',
-        featureClass: 'building' as const,
-        ward: 'Ward 01 - North',
-        confidence: 0.96,
-        modelVersion: 'SegFormer-B4 v2.3',
-        processingDate: '2026-11-12',
-        polygon: [
-          [268, 52],
-          [345, 72],
-          [325, 134],
-          [246, 114],
-        ] as [number, number][],
-        areaSqm: 184.6,
-        perimeterM: 56.4,
-        roofType: 'RCC' as const,
-        roofConfidence: 0.94,
-        centroid: [28.89712, 76.64095] as [number, number],
-        roofPreviewUrl: ROOF_RCC_IMG,
-      },
-      {
-        id: 'BLD-KS-004',
-        projectId: 'PRJ-HR-2026-014',
-        featureClass: 'building' as const,
-        ward: 'Ward 01 - North',
-        confidence: 0.93,
-        modelVersion: 'SegFormer-B4 v2.3',
-        processingDate: '2026-11-12',
-        polygon: [
-          [392, 114],
-          [474, 130],
-          [464, 168],
-          [382, 152],
-        ] as [number, number][],
-        areaSqm: 118.4,
-        perimeterM: 44.6,
-        roofType: 'Tiled' as const,
-        roofConfidence: 0.91,
-        centroid: [28.89668, 76.64215] as [number, number],
-        roofPreviewUrl: ROOF_TILED_IMG,
-      },
-    ];
-  }, [activeProjectFeatures]);
+  const xaiCandidates = useMemo(
+    () =>
+      activeProjectFeatures.filter(
+        (f): f is BuildingFeature =>
+          f.featureClass === 'building' && Boolean(f.roofPreviewUrl)
+      ),
+    [activeProjectFeatures]
+  );
 
   const [xaiSelectedId, setXaiSelectedId] = useState<string>(xaiCandidates[0]?.id ?? '');
   const [gradCamOpacity, setGradCamOpacity] = useState<number>(0.6);
@@ -749,6 +706,17 @@ export function AnalyticsLabPage() {
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {analyticsTab === 'explainable' && !activeXaiFeature && (
+        <div className="bg-white border border-[#E4E6DF] rounded-[4px] p-6">
+          <EmptyState
+            title="No explainability sample available"
+            description="Run the deployed U-Net on an orthophoto first. This workspace only displays actual extracted building patches; synthetic Grad-CAM examples are not shown as model explanations."
+            actionLabel="Open Processing"
+            onAction={() => setActivePage('processing')}
+          />
         </div>
       )}
 
