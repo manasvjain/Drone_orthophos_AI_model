@@ -796,6 +796,7 @@ export async function runTiledDroneSegmentation(
       overlayUrl: string;
       buildingsMaskUrl: string;
       roadsMaskUrl: string;
+      classesMaskUrl: string;
     };
   }
 ): Promise<SegmentationRunResult> {
@@ -867,28 +868,18 @@ export async function runTiledDroneSegmentation(
   const fromFlask = Boolean(options?.flaskMasks);
 
   if (options?.flaskMasks) {
-    try {
-      const [bldImg, rdImg] = await Promise.all([
-        loadImageElement(options.flaskMasks.buildingsMaskUrl),
-        loadImageElement(options.flaskMasks.roadsMaskUrl),
-      ]);
-      const maskCanvas = document.createElement('canvas');
-      maskCanvas.width = w;
-      maskCanvas.height = h;
-      const mCtx = maskCanvas.getContext('2d');
-      if (mCtx) {
-        mCtx.drawImage(rdImg, 0, 0, w, h);
-        const rdData = mCtx.getImageData(0, 0, w, h).data;
-        mCtx.clearRect(0, 0, w, h);
-        mCtx.drawImage(bldImg, 0, 0, w, h);
-        const bldData = mCtx.getImageData(0, 0, w, h).data;
-        for (let i = 0; i < w * h; i++) {
-          if (bldData[i * 4] > 128) rawClasses[i] = CLS_BUILDING;
-          else if (rdData[i * 4] > 128) rawClasses[i] = CLS_ROAD;
-        }
-      }
-    } catch {
-      // Keep local classification if mask decode fails
+    const classImg = await loadImageElement(options.flaskMasks.classesMaskUrl);
+    const maskCanvas = document.createElement('canvas');
+    maskCanvas.width = w;
+    maskCanvas.height = h;
+    const mCtx = maskCanvas.getContext('2d');
+    if (!mCtx) throw new Error('Unable to decode U-Net class mask.');
+    mCtx.imageSmoothingEnabled = false;
+    mCtx.drawImage(classImg, 0, 0, w, h);
+    const classData = mCtx.getImageData(0, 0, w, h).data;
+    for (let i = 0; i < w * h; i++) {
+      const classId = classData[i * 4];
+      rawClasses[i] = classId <= CLS_ROAD ? classId : CLS_BG;
     }
   } else {
     if (enabled.has('Buildings')) {
@@ -996,7 +987,7 @@ export async function runTiledDroneSegmentation(
     }
   }
 
-  if (enabled.has('Water')) {
+  if (!fromFlask && enabled.has('Water')) {
     const rawWaterComps = extractConnectedComponents(grid, gw, gh, CLS_WATER, 1, 4);
     const validWaterCells = new Set<number>();
     for (const comp of rawWaterComps) {
