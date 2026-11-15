@@ -174,6 +174,7 @@ export function AnalyticsLabPage() {
         `District / State: ${activeProject?.district ?? '-'}, ${activeProject?.state ?? '-'}`,
         `CRS: ${activeProject?.orthophoto?.georeferenced ? activeProject.orthophoto.crs : 'Not georeferenced — coordinates remain in image pixels'}`,
         `Model: ${activeProject?.modelVersion ?? '-'}`,
+        `Spatial measurements: ${activeProject?.segmentationOutputs?.measurementQuality === 'calibrated' ? 'Calibrated' : 'Estimated — verify CRS and GSD before official use'}`,
         `--------------------------------------------------`,
         `Extracted Buildings: ${analyticsData.blds.length} (${analyticsData.totalBuildingArea.toFixed(1)} m²)`,
         `Road Centerlines: ${analyticsData.roads.length} (${analyticsData.totalRoadLength.toFixed(1)} m)`,
@@ -204,6 +205,7 @@ export function AnalyticsLabPage() {
         : null,
       coordinate_space: hasGeoreferencing ? 'EPSG:4326' : 'orthophoto_pixel_coordinates',
       georeferenced: hasGeoreferencing,
+      measurement_quality: activeProject?.segmentationOutputs?.measurementQuality ?? 'not_processed',
       featureCount: subset.length,
       features: items.map((f) => {
         if (f.featureClass === 'road') {
