@@ -40,7 +40,6 @@ export function ProjectsProcessingPage({
     deleteProject,
     setActivePage,
     setLayers,
-    backendHealth,
   } = useGis();
 
   const [maskPreviewTab, setMaskPreviewTab] = useState<'overlay' | 'buildings' | 'roads'>('overlay');
@@ -208,14 +207,6 @@ export function ProjectsProcessingPage({
       : isRasterImage
       ? URL.createObjectURL(file)
       : DRONE_IMG_2;
-
-    if (!sampleImg && file && /\.(tif|tiff|geotiff)$/i.test(file.name)) {
-      setUploadProgress(85);
-      window.setTimeout(() => {
-        finishUpload(1024, 1024, targetUrl);
-      }, 220);
-      return;
-    }
 
     const probe = new Image();
     probe.onload = () => {
